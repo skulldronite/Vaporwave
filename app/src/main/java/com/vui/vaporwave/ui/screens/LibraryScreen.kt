@@ -806,12 +806,20 @@ fun DetailTrackList(
         object : NestedScrollConnection {
             // Pure observer -- always returns Offset.Zero, so this never changes how the list
             // itself scrolls (no risk of repeating the earlier "can't scroll" regression).
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+            //
+            // Tracks onPostScroll's `consumed` (what the list actually scrolled), not
+            // onPreScroll's `available` (the raw drag delta, which keeps growing past however
+            // far the list can actually move -- e.g. once it's hit the bottom with nothing left
+            // to reveal). Using `available` there meant a short album could still be dragged
+            // past its own scroll limit and keep the header collapsing/pushing after the list
+            // itself had already stopped moving. `consumed` is naturally zero once the list can't
+            // scroll any further in that direction, so the header stops exactly when it does.
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
                 if (source != NestedScrollSource.UserInput) return Offset.Zero
                 // Dragging up (revealing further content) reports a negative Y delta here --
                 // subtracting it increases how far "pushed" the header is. Dragging back down
                 // reverses it the same way.
-                pushedPx = (pushedPx - available.y).coerceIn(0f, headerHeightPx.toFloat())
+                pushedPx = (pushedPx - consumed.y).coerceIn(0f, headerHeightPx.toFloat())
                 return Offset.Zero
             }
         }
@@ -858,6 +866,29 @@ fun DetailTrackList(
             val tracksNumberable = availableSortOptions.contains(LibrarySortOption.TRACK_NUMBER)
             val showAlphabetScrollbar = tracksNumberable && sortOption == LibrarySortOption.NAME
             val showPreciseScrollbar = tracksNumberable && sortOption == LibrarySortOption.TRACK_NUMBER
+
+            // Only used to decide *how* a scrollbar jump behaves below -- the scrollbars
+            // themselves stay visible regardless (see the comment above).
+            val canScroll by remember {
+                derivedStateOf { listState.layoutInfo.totalItemsCount > listState.layoutInfo.visibleItemsInfo.size }
+            }
+            // When the list can't actually scroll, scrollToItem would still nudge it by whatever
+            // sliver of range is technically left, and since that's a programmatic jump (not a
+            // drag) it bypasses headerPushConnection entirely -- the header has no way to know it
+            // happened, so it falls out of sync with the list. Highlighting the matching row
+            // instead sidesteps that: nothing scrolls, so nothing can fall out of sync.
+            var highlightedTrackId by remember { mutableStateOf<Long?>(null) }
+            LaunchedEffect(highlightedTrackId) {
+                if (highlightedTrackId != null) {
+                    delay(900)
+                    highlightedTrackId = null
+                }
+            }
+            val onScrollbarJump: ((Int) -> Unit)? = if (canScroll) {
+                null
+            } else {
+                { index -> highlightedTrackId = sortedTracks.getOrNull(index)?.id }
+            }
 
             BoxWithConstraints(
                 modifier = Modifier
@@ -950,7 +981,8 @@ fun DetailTrackList(
                             // Only meaningful once the list is actually ordered by it -- shown
                             // under Name sort too it'd read as index-like clutter unrelated to
                             // the alphabetical order on screen.
-                            trackNumber = if (sortOption == LibrarySortOption.TRACK_NUMBER) track.trackNumber else null
+                            trackNumber = if (sortOption == LibrarySortOption.TRACK_NUMBER) track.trackNumber else null,
+                            isHighlighted = track.id == highlightedTrackId
                         )
                     }
                 }
@@ -1007,7 +1039,8 @@ fun DetailTrackList(
                                 layout(placeable.width, constraints.maxHeight) {
                                     placeable.placeRelative(0, visibleHeaderPx)
                                 }
-                            }
+                            },
+                        onJump = onScrollbarJump
                     )
                 }
 
@@ -1015,6 +1048,7 @@ fun DetailTrackList(
                     PreciseScrollbar(
                         itemCount = sortedTracks.size,
                         listState = listState,
+                        onJump = onScrollbarJump,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(end = PRECISE_SCROLLBAR_EDGE_INSET)
@@ -1595,7 +1629,15 @@ private fun EmptyLibrarySection(
 private fun AlphabetScrollbar(
     labels: List<String>,
     listState: LazyListState,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // Default behaviour scrolls the list to the jumped-to index. Album detail overrides this
+    // when its list isn't scrollable (see DetailTrackList): scrollToItem there would still nudge
+    // the list by whatever sliver of range contentPadding leaves it, and since that nudge is a
+    // programmatic jump rather than a drag it doesn't flow through the header's scroll-delta
+    // tracking (headerPushConnection) -- the header and list would fall out of sync with no way
+    // for the header to know a jump happened. Highlighting instead of scrolling sidesteps the
+    // problem entirely rather than trying to patch the tracking for this one case.
+    onJump: ((index: Int) -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
     val letters = remember { ('A'..'Z').map { it.toString() } }
@@ -1617,7 +1659,11 @@ private fun AlphabetScrollbar(
     fun jumpTo(letter: String) {
         activeLetter = letter
         letterIndex[letter]?.let { index ->
-            coroutineScope.launch { listState.scrollToItem(index) }
+            if (onJump != null) {
+                onJump(index)
+            } else {
+                coroutineScope.launch { listState.scrollToItem(index) }
+            }
         }
     }
 
@@ -1719,7 +1765,9 @@ private fun AlphabetScrollbar(
 private fun PreciseScrollbar(
     itemCount: Int,
     listState: LazyListState,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // See the identical parameter on AlphabetScrollbar for why album detail overrides this.
+    onJump: ((index: Int) -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
     var trackHeightPx by remember { mutableStateOf(0f) }
@@ -1759,7 +1807,11 @@ private fun PreciseScrollbar(
                     fun scrollToY(y: Float) {
                         val fraction = (y / height).coerceIn(0f, 1f)
                         val targetIndex = (fraction * maxFirstIndex).roundToInt().coerceIn(0, itemCount - 1)
-                        coroutineScope.launch { listState.scrollToItem(targetIndex) }
+                        if (onJump != null) {
+                            onJump(targetIndex)
+                        } else {
+                            coroutineScope.launch { listState.scrollToItem(targetIndex) }
+                        }
                     }
                     down.consume()
                     scrollToY(down.position.y)

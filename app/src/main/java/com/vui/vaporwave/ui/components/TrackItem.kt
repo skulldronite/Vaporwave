@@ -46,13 +46,16 @@ fun TrackItem(
     modifier: Modifier = Modifier,
     showArtwork: Boolean = true,
     /** Shown in artwork's place (from the file's own metadata) when [showArtwork] is false. */
-    trackNumber: Int? = null
+    trackNumber: Int? = null,
+    /** Briefly true to flash this row -- e.g. an alphabet-scrollbar jump on a list too short to
+     *  actually scroll to it. Caller is responsible for clearing it back to false after a beat. */
+    isHighlighted: Boolean = false
 ) {
     val backgroundColor by animateColorAsState(
-        targetValue = if (isPlayingThisTrack) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
-        } else {
-            MaterialTheme.colorScheme.surface
+        targetValue = when {
+            isHighlighted -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+            isPlayingThisTrack -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+            else -> MaterialTheme.colorScheme.surface
         },
         label = "track_bg"
     )
