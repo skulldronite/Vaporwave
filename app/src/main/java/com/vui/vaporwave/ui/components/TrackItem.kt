@@ -44,7 +44,9 @@ fun TrackItem(
     isPlayingThisTrack: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    showArtwork: Boolean = true
+    showArtwork: Boolean = true,
+    /** Shown in artwork's place (from the file's own metadata) when [showArtwork] is false. */
+    trackNumber: Int? = null
 ) {
     val backgroundColor by animateColorAsState(
         targetValue = if (isPlayingThisTrack) {
@@ -118,6 +120,21 @@ fun TrackItem(
                     }
                 }
 
+                Spacer(modifier = Modifier.width(14.dp))
+            } else if (trackNumber != null && trackNumber > 0) {
+                // No artwork here (already shown once in the hero above the list) -- the freed
+                // slot instead carries this track's position from its own file metadata.
+                Box(
+                    modifier = Modifier.size(width = 28.dp, height = 52.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = trackNumber.toString(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (isPlayingThisTrack) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isPlayingThisTrack) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Spacer(modifier = Modifier.width(14.dp))
             }
 

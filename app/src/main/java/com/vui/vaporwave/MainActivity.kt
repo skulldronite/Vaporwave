@@ -85,6 +85,7 @@ import com.vui.vaporwave.ui.screens.EffectsScreen
 import com.vui.vaporwave.ui.screens.FilesScreen
 import com.vui.vaporwave.ui.screens.HeroArtwork
 import com.vui.vaporwave.ui.screens.LibraryScreen
+import com.vui.vaporwave.ui.screens.LibrarySortOption
 import com.vui.vaporwave.ui.screens.SearchScreen
 import com.vui.vaporwave.ui.screens.SettingsScreen
 import com.vui.vaporwave.ui.screens.SplashScreen
@@ -466,7 +467,13 @@ class MainActivity : ComponentActivity() {
                             onOpenPlaylist = { id -> viewModel.openLibraryDetail(LibraryDetail.PlaylistDetail(id)) },
                             onOpenSpotlight = { category -> viewModel.openLibraryDetail(LibraryDetail.Spotlight(category)) },
                             onPullProgressChanged = { pullProgressState.floatValue = it },
-                            isOverlayOpen = isSearchOpen || libraryDetailStack.isNotEmpty()
+                            // Now Playing must be included here too: without it, this screen's
+                            // own no-op edge-swipe guard (see LibraryScreen's BackHandler) stays
+                            // enabled while Now Playing is expanded over the Tracks tab, and
+                            // since it registers after (so takes priority over) the BackHandler
+                            // above that actually collapses Now Playing, back swipes were being
+                            // silently swallowed instead of putting the mini player back down.
+                            isOverlayOpen = isSearchOpen || libraryDetailStack.isNotEmpty() || isNowPlayingExpanded
                         )
                     }
                     AppDestination.FILES -> {
@@ -595,7 +602,11 @@ class MainActivity : ComponentActivity() {
                                         heroArtwork = HeroArtwork(artworkUri, Icons.Default.Album),
                                         // Every row would otherwise repeat the same artwork
                                         // already shown in the hero image above the list.
-                                        showTrackArtwork = false
+                                        showTrackArtwork = false,
+                                        availableSortOptions = listOf(
+                                            LibrarySortOption.NAME,
+                                            LibrarySortOption.TRACK_NUMBER
+                                        )
                                     )
                                 }
                                 is LibraryDetail.Artist -> {
@@ -634,6 +645,7 @@ class MainActivity : ComponentActivity() {
                                 showToolbar = payload.showToolbar,
                                 heroArtwork = payload.heroArtwork,
                                 showTrackArtwork = payload.showTrackArtwork,
+                                availableSortOptions = payload.availableSortOptions,
                                 modifier = Modifier.statusBarsPadding()
                             )
                         }
@@ -743,5 +755,10 @@ private data class LibraryDetailPayload(
     val tracks: List<AudioTrack>,
     val showToolbar: Boolean,
     val heroArtwork: HeroArtwork? = null,
-    val showTrackArtwork: Boolean = true
+    val showTrackArtwork: Boolean = true,
+    val availableSortOptions: List<LibrarySortOption> = listOf(
+        LibrarySortOption.NAME,
+        LibrarySortOption.DATE_ADDED,
+        LibrarySortOption.ARTIST
+    )
 )

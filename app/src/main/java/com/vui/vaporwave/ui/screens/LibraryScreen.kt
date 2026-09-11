@@ -3,8 +3,6 @@ package com.vui.vaporwave.ui.screens
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animate
@@ -18,6 +16,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.PaddingValues
@@ -45,6 +44,7 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Schedule
@@ -85,6 +85,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -115,10 +117,11 @@ private val PRECISE_SCROLLBAR_WIDTH = 20.dp
 // overlap the system's edge-swipe-back gesture zone on devices with fullscreen gesture nav.
 private val PRECISE_SCROLLBAR_EDGE_INSET = 10.dp
 
-private enum class LibrarySortOption(val label: String, val icon: ImageVector) {
+enum class LibrarySortOption(val label: String, val icon: ImageVector) {
     NAME("Name", Icons.Default.SortByAlpha),
     DATE_ADDED("Date Added", Icons.Default.Schedule),
-    ARTIST("Artist", Icons.Default.Person)
+    ARTIST("Artist", Icons.Default.Person),
+    TRACK_NUMBER("Track Number", Icons.Default.FormatListNumbered)
 }
 
 @Composable
@@ -508,6 +511,9 @@ private fun sortTracks(tracks: List<AudioTrack>, sortOption: LibrarySortOption):
         LibrarySortOption.NAME -> tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
         LibrarySortOption.DATE_ADDED -> tracks.sortedByDescending { it.dateAddedMs }
         LibrarySortOption.ARTIST -> tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.artist })
+        // Untagged tracks (trackNumber == 0) sort after every numbered one rather than jumping
+        // to the front.
+        LibrarySortOption.TRACK_NUMBER -> tracks.sortedBy { if (it.trackNumber == 0) Int.MAX_VALUE else it.trackNumber }
     }
 
 private fun trackLabelsFor(tracks: List<AudioTrack>, sortOption: LibrarySortOption): List<String> =
@@ -756,7 +762,14 @@ fun DetailTrackList(
     modifier: Modifier = Modifier,
     showToolbar: Boolean = true,
     heroArtwork: HeroArtwork? = null,
-    showTrackArtwork: Boolean = true
+    showTrackArtwork: Boolean = true,
+    // Artist/playlist/spotlight keep the original three; album detail overrides this to just
+    // Name + Track Number (see MainActivity), which also gates the scrollbars below.
+    availableSortOptions: List<LibrarySortOption> = listOf(
+        LibrarySortOption.NAME,
+        LibrarySortOption.DATE_ADDED,
+        LibrarySortOption.ARTIST
+    )
 ) {
     var sortOption by remember { mutableStateOf(LibrarySortOption.NAME) }
     val sortedTracks = remember(tracks, sortOption, showToolbar) {
@@ -767,28 +780,107 @@ fun DetailTrackList(
     val isAtTop by remember {
         derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
     }
+    val density = LocalDensity.current
+    // Measured from the two actual header composables below (onSizeChanged) -- hero art and
+    // toolbar are tracked separately since the toolbar is drawn in a different z-layer (see
+    // below) to stay clickable, but their combined height is also the LazyColumn's top
+    // contentPadding, so scrolling through that padding *is* what moves
+    // firstVisibleItemScrollOffset -- dividing by that same total (not an unrelated constant) is
+    // what keeps the header's translation and the list's own scroll 1:1 in lockstep: scroll
+    // 10px, the header moves up exactly 10px, same as the list content below it.
+    var heroSectionHeightPx by remember { mutableIntStateOf(0) }
+    var toolbarSectionHeightPx by remember { mutableIntStateOf(0) }
+    val headerHeightPx by remember {
+        derivedStateOf { heroSectionHeightPx + toolbarSectionHeightPx }
+    }
+    // Raw pixels scrolled since the top, clamped to the header's own height -- tracked directly
+    // from real gesture deltas via the NestedScrollConnection below, rather than inferred from
+    // listState.firstVisibleItemIndex/firstVisibleItemScrollOffset. Those two only describe
+    // progress through the actual *items*, and how they account for a large top contentPadding
+    // before item 0 turned out not to match a simple "offset / headerHeightPx" reading -- alpha
+    // was reaching 0 well before the list had genuinely scrolled the full header height, which is
+    // what made the header look like it just vanished partway through the gesture rather than
+    // fading the whole way. Measuring the real scroll delta directly removes that guesswork.
+    var pushedPx by remember { mutableFloatStateOf(0f) }
+    val headerPushConnection = remember {
+        object : NestedScrollConnection {
+            // Pure observer -- always returns Offset.Zero, so this never changes how the list
+            // itself scrolls (no risk of repeating the earlier "can't scroll" regression).
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source != NestedScrollSource.UserInput) return Offset.Zero
+                // Dragging up (revealing further content) reports a negative Y delta here --
+                // subtracting it increases how far "pushed" the header is. Dragging back down
+                // reverses it the same way.
+                pushedPx = (pushedPx - available.y).coerceIn(0f, headerHeightPx.toFloat())
+                return Offset.Zero
+            }
+        }
+    }
+    // Continuous 0f (fully open) .. 1f (fully collapsed), driven directly by pushedPx -- not a
+    // boolean threshold. AnimatedVisibility's isAtTop toggle used to drive this as a fade, which
+    // (a) only ever faded in place rather than actually pushing the list up (fadeOut() alone
+    // doesn't shrink the space the hero occupies) and (b) could snap back to visible the moment
+    // isAtTop flickered true again, reading as an unwanted "reappear". Tying the fraction to a
+    // continuously tracked value removes that snap entirely: there's no boolean to flicker, just
+    // a value that tracks the actual scroll distance. The hero art and the toolbar below both
+    // read this same fraction, so they fade and move by exactly the pushed amount, in lockstep
+    // with each other.
+    val heroCollapseFraction by remember {
+        derivedStateOf {
+            if (headerHeightPx <= 0) 0f else (pushedPx / headerHeightPx.toFloat()).coerceIn(0f, 1f)
+        }
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
-        if (heroArtwork != null) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+        if (heroArtwork != null && tracks.isNotEmpty()) {
+            // Header and list share one Box rather than stacking in the Column: the header used
+            // to be a real layout sibling above the list whose *measured height* shrank as
+            // heroCollapseFraction grew, which meant every scroll-delta frame also resized the
+            // list's own container -- on at least one device that fed back into the list's own
+            // scroll handling badly enough to read as "can't scroll at all". Here the header is
+            // a purely visual overlay (graphicsLayer alpha/translation only, draw-phase, no
+            // relayout) with zero influence on the list's size, so the list's layout is fully
+            // static during scroll no matter what the header is doing.
+            //
+            // The two header pieces sit in different z-layers on purpose. The hero art (icon,
+            // title, subtitle) is pure decoration, so it's drawn *before* the LazyColumn (under
+            // it) -- a touch anywhere on it still reaches the list underneath for scrolling. The
+            // toolbar (sort menu + shuffle dice) is the one interactive part, so it's drawn
+            // *after* the LazyColumn (on top) so its buttons actually receive taps instead of
+            // the list swallowing them; it still fades/translates by the exact same amount as
+            // the hero art above it, so the two read as one continuous block regardless of
+            // which layer either is in.
+            // Only album detail offers Track Number as a sort option at all, so gating both
+            // scrollbars on its presence keeps them out of artist/playlist/spotlight, where a
+            // number pulled from file metadata (or an alphabetical jump by title) doesn't apply.
+            // Otherwise the only thing that switches between them is which sort mode is active --
+            // they're never additionally hidden for being "not scrollable enough".
+            val tracksNumberable = availableSortOptions.contains(LibrarySortOption.TRACK_NUMBER)
+            val showAlphabetScrollbar = tracksNumberable && sortOption == LibrarySortOption.NAME
+            val showPreciseScrollbar = tracksNumberable && sortOption == LibrarySortOption.TRACK_NUMBER
+
+            BoxWithConstraints(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .nestedScroll(headerPushConnection)
             ) {
-                Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-            }
-            // Scrolling the list collapses the hero art away rather than leaving it (and the
-            // back button row's worth of empty space above it) permanently eating into the
-            // list's visible area. Explicit fade-only enter/exit -- AnimatedVisibility's default
-            // expandIn()/shrinkOut() scales from the vertical center, which on a box this size
-            // reads as a jarring "zoom" pop the first time it appears (worst on a cold, not yet
-            // JIT-warmed launch).
-            AnimatedVisibility(visible = isAtTop, enter = fadeIn(), exit = fadeOut()) {
+                val headerHeightDp = with(density) { headerHeightPx.toDp() }
+                val heroSectionHeightDp = with(density) { heroSectionHeightPx.toDp() }
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 32.dp, vertical = 8.dp),
+                        .align(Alignment.TopCenter)
+                        .onSizeChanged { heroSectionHeightPx = it.height }
+                        .graphicsLayer {
+                            alpha = 1f - heroCollapseFraction
+                            translationY = -heroCollapseFraction * headerHeightPx
+                        },
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                    // Room for the back button, which is pinned separately below (always on
+                    // top, never collapsing) so it doesn't scroll away with the rest.
+                    Spacer(modifier = Modifier.height(52.dp))
                     Box(
                         modifier = Modifier
                             .size(180.dp)
@@ -832,6 +924,189 @@ fun DetailTrackList(
                         textAlign = TextAlign.Center
                     )
                 }
+
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        bottom = 120.dp,
+                        top = headerHeightDp,
+                        end = when {
+                            showAlphabetScrollbar -> ALPHABET_SCROLLBAR_WIDTH
+                            showPreciseScrollbar -> PRECISE_SCROLLBAR_WIDTH + PRECISE_SCROLLBAR_EDGE_INSET
+                            else -> 0.dp
+                        }
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(items = sortedTracks, key = { it.id }) { track ->
+                        val isPlayingThis = currentTrack?.id == track.id
+                        TrackItem(
+                            track = track,
+                            isPlayingThisTrack = isPlayingThis,
+                            onClick = { onTrackClick(track) },
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                            showArtwork = showTrackArtwork,
+                            // Only meaningful once the list is actually ordered by it -- shown
+                            // under Name sort too it'd read as index-like clutter unrelated to
+                            // the alphabetical order on screen.
+                            trackNumber = if (sortOption == LibrarySortOption.TRACK_NUMBER) track.trackNumber else null
+                        )
+                    }
+                }
+
+                if (showToolbar) {
+                    // Drawn after the LazyColumn (on top) so it actually receives taps -- see
+                    // the z-layer comment above. Offset down by the hero section's own measured
+                    // height so it sits directly beneath it, and driven by the same
+                    // heroCollapseFraction/headerHeightPx as the hero art so the two move and
+                    // fade as a single unit.
+                    LibraryToolbar(
+                        sortOption = sortOption,
+                        onSortOptionSelected = { sortOption = it },
+                        onShuffleClick = { onShufflePlay(sortedTracks) },
+                        availableSortOptions = availableSortOptions,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth(0.9f)
+                            .offset(y = heroSectionHeightDp + 8.dp)
+                            .onSizeChanged { toolbarSectionHeightPx = it.height }
+                            .graphicsLayer {
+                                alpha = 1f - heroCollapseFraction
+                                translationY = -heroCollapseFraction * headerHeightPx
+                            }
+                    )
+                }
+
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 4.dp, top = 4.dp)
+                ) {
+                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+
+                if (showAlphabetScrollbar) {
+                    AlphabetScrollbar(
+                        labels = remember(sortedTracks) { trackLabelsFor(sortedTracks, LibrarySortOption.NAME) },
+                        listState = listState,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            // Grows to fill the space the header just vacated as it collapses,
+                            // rather than leaving a dead top gap where rows are now visible but
+                            // no scrollbar covers them -- see the comment on PreciseScrollbar's
+                            // identical modifier below for the mechanics.
+                            .layout { measurable, constraints ->
+                                val visibleHeaderPx = (headerHeightPx * (1f - heroCollapseFraction))
+                                    .roundToInt().coerceIn(0, constraints.maxHeight)
+                                val rowsHeight = constraints.maxHeight - visibleHeaderPx
+                                val placeable = measurable.measure(
+                                    constraints.copy(minHeight = rowsHeight, maxHeight = rowsHeight)
+                                )
+                                layout(placeable.width, constraints.maxHeight) {
+                                    placeable.placeRelative(0, visibleHeaderPx)
+                                }
+                            }
+                    )
+                }
+
+                if (showPreciseScrollbar) {
+                    PreciseScrollbar(
+                        itemCount = sortedTracks.size,
+                        listState = listState,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(end = PRECISE_SCROLLBAR_EDGE_INSET)
+                            // This layer's own reported height always stays the full container
+                            // height (constraints.maxHeight, unchanged frame to frame) -- only
+                            // the *inner* measured content shrinks/grows and is repositioned by
+                            // visibleHeaderPx. That keeps the outer BoxWithConstraints from ever
+                            // being asked to re-measure as this reacts to scroll, the same class
+                            // of feedback loop that broke scrolling the first time around (see
+                            // the comment above on why the header itself is graphicsLayer-only).
+                            .layout { measurable, constraints ->
+                                val visibleHeaderPx = (headerHeightPx * (1f - heroCollapseFraction))
+                                    .roundToInt().coerceIn(0, constraints.maxHeight)
+                                val rowsHeight = constraints.maxHeight - visibleHeaderPx
+                                val placeable = measurable.measure(
+                                    constraints.copy(minHeight = rowsHeight, maxHeight = rowsHeight)
+                                )
+                                layout(placeable.width, constraints.maxHeight) {
+                                    placeable.placeRelative(0, visibleHeaderPx)
+                                }
+                            }
+                    )
+                }
+            }
+        } else if (heroArtwork != null) {
+            // Nothing to scroll, so the header is shown plainly (no collapse behaviour needed).
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+            ) {
+                Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 32.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(180.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = heroArtwork.placeholderIcon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(56.dp)
+                    )
+                    if (heroArtwork.uri != null) {
+                        val context = LocalContext.current
+                        AsyncImage(
+                            model = remember(heroArtwork.uri) {
+                                ImageRequest.Builder(context)
+                                    .data(heroArtwork.uri)
+                                    .size(Size(360, 360))
+                                    .build()
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "No songs here yet",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         } else {
             Row(
@@ -857,47 +1132,48 @@ fun DetailTrackList(
                     )
                 }
             }
-        }
 
-        if (tracks.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(32.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "No songs here yet",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        } else {
-            if (showToolbar) {
-                AnimatedVisibility(visible = isAtTop) {
-                    LibraryToolbar(
-                        sortOption = sortOption,
-                        onSortOptionSelected = { sortOption = it },
-                        onShuffleClick = { onShufflePlay(sortedTracks) }
+            if (tracks.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No songs here yet",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
+            } else {
+                if (showToolbar) {
+                    AnimatedVisibility(visible = isAtTop) {
+                        LibraryToolbar(
+                            sortOption = sortOption,
+                            onSortOptionSelected = { sortOption = it },
+                            onShuffleClick = { onShufflePlay(sortedTracks) },
+                            availableSortOptions = availableSortOptions
+                        )
+                    }
+                }
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 120.dp, top = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(items = sortedTracks, key = { it.id }) { track ->
-                    val isPlayingThis = currentTrack?.id == track.id
-                    TrackItem(
-                        track = track,
-                        isPlayingThisTrack = isPlayingThis,
-                        onClick = { onTrackClick(track) },
-                        modifier = Modifier.padding(horizontal = 8.dp),
-                        showArtwork = showTrackArtwork
-                    )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 120.dp, top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(items = sortedTracks, key = { it.id }) { track ->
+                        val isPlayingThis = currentTrack?.id == track.id
+                        TrackItem(
+                            track = track,
+                            isPlayingThisTrack = isPlayingThis,
+                            onClick = { onTrackClick(track) },
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                            showArtwork = showTrackArtwork
+                        )
+                    }
                 }
             }
         }

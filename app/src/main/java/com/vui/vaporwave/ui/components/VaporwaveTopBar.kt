@@ -130,12 +130,12 @@ fun VaporwaveTopBar(
                         // re-shape and re-measure the glyph run from scratch, and pullProgress
                         // updates on every touch-move frame (up to 120Hz) during the drag.
                         // Text is a skippable composable: if the fontSize value it receives is
-                        // identical to last frame's, Compose skips re-measuring it entirely. 28
+                        // identical to last frame's, Compose skips re-measuring it entirely. 38
                         // steps across the full pull range (under 1sp per step) reads as smooth
                         // continuous growth while still cutting reshape work from once-per-frame
-                        // (up to 120 times) down to at most 28 over the whole drag. 12 was tried
-                        // first and the stepping was visible -- this is the next notch up.
-                        val titleFontSizeSteps = 28
+                        // (up to 120 times) down to at most 38 over the whole drag. 12 and 28 were
+                        // tried first and the stepping was visible -- this is the next notch up.
+                        val titleFontSizeSteps = 38
                         val quantizedPullProgress =
                             (pullProgress * titleFontSizeSteps).roundToInt() / titleFontSizeSteps.toFloat()
                         val titleFontSize = 25.sp * (1f + quantizedPullProgress * 0.9f)
