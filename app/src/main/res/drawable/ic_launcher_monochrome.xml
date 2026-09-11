@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Themed-icon silhouette: sun + equalizer bars, single tintable color -->
+    <path android:pathData="M54,22a17,17 0,1 1,-0.01 0z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M30,70h7v18h-7z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M40,62h7v26h-7z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M50,52h8v36h-8z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M61,64h7v24h-7z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M71,72h7v16h-7z" android:fillColor="#FFFFFF" />
+</vector>
