@@ -70,10 +70,14 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import java.util.Locale
+import com.vui.vaporwave.data.tagging.MetadataFields
 import com.vui.vaporwave.model.AudioTrack
+import com.vui.vaporwave.model.ExtendedTrackMetadata
 import com.vui.vaporwave.theme.VaporwaveTheme
 import com.vui.vaporwave.ui.AppDestination
 import com.vui.vaporwave.ui.LibraryDetail
+import com.vui.vaporwave.ui.MetadataEditTarget
+import com.vui.vaporwave.ui.MetadataSaveState
 import com.vui.vaporwave.ui.MusicViewModel
 import com.vui.vaporwave.ui.SpotlightCategory
 import com.vui.vaporwave.ui.components.MiniPlayer
@@ -86,9 +90,11 @@ import com.vui.vaporwave.ui.screens.FilesScreen
 import com.vui.vaporwave.ui.screens.HeroArtwork
 import com.vui.vaporwave.ui.screens.LibraryScreen
 import com.vui.vaporwave.ui.screens.LibrarySortOption
+import com.vui.vaporwave.ui.screens.MetadataEditorScreen
 import com.vui.vaporwave.ui.screens.SearchScreen
 import com.vui.vaporwave.ui.screens.SettingsScreen
 import com.vui.vaporwave.ui.screens.SplashScreen
+import com.vui.vaporwave.ui.screens.TrackDetailsScreen
 
 class MainActivity : ComponentActivity() {
 
@@ -241,6 +247,10 @@ class MainActivity : ComponentActivity() {
         val artists by viewModel.artists.collectAsStateWithLifecycle()
         val playlists by viewModel.playlists.collectAsStateWithLifecycle()
         val playlistPickerTarget by viewModel.playlistPickerTarget.collectAsStateWithLifecycle()
+        val trackDetailsTarget by viewModel.trackDetailsTarget.collectAsStateWithLifecycle()
+        val metadataEditTarget by viewModel.metadataEditTarget.collectAsStateWithLifecycle()
+        val metadataSaveState by viewModel.metadataSaveState.collectAsStateWithLifecycle()
+        val pendingWriteRequest by viewModel.pendingWriteRequest.collectAsStateWithLifecycle()
         val currentLibraryTab by viewModel.currentLibraryTab.collectAsStateWithLifecycle()
         val showSwipeHint by viewModel.showSwipeHint.collectAsStateWithLifecycle()
         val recentlyAddedTracks by viewModel.recentlyAddedTracks.collectAsStateWithLifecycle()
@@ -317,6 +327,18 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Launches the write-access consent dialog (createWriteRequest on API30+, or the
+        // recoverable-access prompt Android hands back on API29 when a write is denied) --
+        // saveMetadata() suspends until this reports back via onWriteRequestResult.
+        val writeRequestLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.StartIntentSenderForResult()
+        ) { result ->
+            viewModel.onWriteRequestResult(result.resultCode == android.app.Activity.RESULT_OK)
+        }
+        LaunchedEffect(pendingWriteRequest) {
+            pendingWriteRequest?.let { writeRequestLauncher.launch(it) }
+        }
+
         BackHandler(enabled = isNowPlayingExpanded) {
             viewModel.setNowPlayingExpanded(false)
         }
@@ -332,8 +354,25 @@ class MainActivity : ComponentActivity() {
         // closeLibraryDetail() pops just the top of the stack, so back steps out one level at a
         // time -- e.g. from an album opened out of an artist's Albums tab, back first returns to
         // that artist (at the same tab) before a second press closes the overlay outright.
-        BackHandler(enabled = libraryDetailStack.isNotEmpty() && !isSearchOpen && !isNowPlayingExpanded) {
+        // Also gated on trackDetailsTarget/metadataEditTarget being closed, since both of those
+        // render on top of this overlay -- without the guard, back would skip straight past them
+        // to the library detail beneath instead of closing the one actually on screen.
+        BackHandler(
+            enabled = libraryDetailStack.isNotEmpty() && !isSearchOpen && !isNowPlayingExpanded &&
+                trackDetailsTarget == null && metadataEditTarget == null
+        ) {
             viewModel.closeLibraryDetail()
+        }
+
+        // Track Details and the Metadata Editor both draw on top of the library detail overlay
+        // (and everything below it), so they need their own back handling -- without these, back
+        // had no registered callback for them at all and fell through to the system default,
+        // which finishes the Activity instead of closing the overlay.
+        BackHandler(enabled = metadataEditTarget != null && !isNowPlayingExpanded) {
+            viewModel.closeMetadataEditor()
+        }
+        BackHandler(enabled = trackDetailsTarget != null && metadataEditTarget == null && !isNowPlayingExpanded) {
+            viewModel.closeTrackDetails()
         }
 
         // Lets the sheet be dragged down from anywhere in its body, not just the header, while
@@ -473,7 +512,8 @@ class MainActivity : ComponentActivity() {
                             // since it registers after (so takes priority over) the BackHandler
                             // above that actually collapses Now Playing, back swipes were being
                             // silently swallowed instead of putting the mini player back down.
-                            isOverlayOpen = isSearchOpen || libraryDetailStack.isNotEmpty() || isNowPlayingExpanded
+                            isOverlayOpen = isSearchOpen || libraryDetailStack.isNotEmpty() || isNowPlayingExpanded ||
+                                trackDetailsTarget != null || metadataEditTarget != null
                         )
                     }
                     AppDestination.FILES -> {
@@ -607,7 +647,17 @@ class MainActivity : ComponentActivity() {
                                             LibrarySortOption.SHORTEST,
                                             LibrarySortOption.LONGEST
                                         ),
-                                        groupByDisc = true
+                                        groupByDisc = true,
+                                        onEditMetadata = {
+                                            viewModel.openMetadataEditor(
+                                                MetadataEditTarget.Album(
+                                                    name = detail.name,
+                                                    artist = albumTracks.firstOrNull()?.artist ?: "",
+                                                    artworkUri = artworkUri,
+                                                    tracks = albumTracks
+                                                )
+                                            )
+                                        }
                                     )
                                 }
                                 is LibraryDetail.Artist -> {
@@ -648,6 +698,9 @@ class MainActivity : ComponentActivity() {
                                 showTrackArtwork = payload.showTrackArtwork,
                                 availableSortOptions = payload.availableSortOptions,
                                 groupByDisc = payload.groupByDisc,
+                                onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
+                                onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
+                                onEditMetadata = payload.onEditMetadata,
                                 modifier = Modifier.statusBarsPadding()
                             )
                         }
@@ -671,6 +724,100 @@ class MainActivity : ComponentActivity() {
                                 onDragStopped = { velocity -> settleSheet(velocity) },
                                 modifier = Modifier.align(Alignment.BottomCenter)
                             )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Track Details -- opened from a track row's overflow menu. Its own edit pencil opens
+        // the metadata editor for that same track, so both are handled together here. Rendered
+        // after the album/artist/playlist overlay above (not alongside it, further up), since
+        // that overlay is itself full-screen and was otherwise drawn on top of this one, making
+        // Track Details/the editor invisible even though the state change was firing correctly.
+        //
+        // Mirrored (same technique as lastNonEmptyStack above) so the slide-out animation keeps
+        // rendering the track it's closing for, instead of the content vanishing the instant
+        // trackDetailsTarget goes null and the animation playing out on an empty Box.
+        val trackDetailsMirror = remember { object { var value: AudioTrack? = null } }
+        if (trackDetailsTarget != null) trackDetailsMirror.value = trackDetailsTarget
+        val lastTrackDetails = trackDetailsMirror.value
+        AnimatedVisibility(
+            visible = trackDetailsTarget != null,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        ) {
+            if (lastTrackDetails != null) {
+                var extendedMetadata by remember(lastTrackDetails) { mutableStateOf<ExtendedTrackMetadata?>(null) }
+                LaunchedEffect(lastTrackDetails) {
+                    extendedMetadata = viewModel.fetchExtendedMetadata(lastTrackDetails)
+                }
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+                ) {
+                    TrackDetailsScreen(
+                        track = lastTrackDetails,
+                        extended = extendedMetadata,
+                        onBack = { viewModel.closeTrackDetails() },
+                        onEditClick = { viewModel.openMetadataEditor(MetadataEditTarget.Track(lastTrackDetails)) }
+                    )
+                }
+            }
+        }
+
+        // Metadata editor -- opened either from Track Details' pencil, or an album's own pencil
+        // icon (batch-editing that album's shared fields). Mirrored for the same reason as above.
+        val metadataEditMirror = remember { object { var value: MetadataEditTarget? = null } }
+        if (metadataEditTarget != null) metadataEditMirror.value = metadataEditTarget
+        val lastMetadataEdit = metadataEditMirror.value
+        AnimatedVisibility(
+            visible = metadataEditTarget != null,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        ) {
+            if (lastMetadataEdit != null) {
+                // A representative track to prefetch genre/recording date/album artist from --
+                // every field in the editor must be prefilled with the *current* tag value before
+                // it's shown (see MetadataEditorScreen's doc comment), so the screen isn't
+                // composed at all until this resolves.
+                val representativeTrack = when (lastMetadataEdit) {
+                    is MetadataEditTarget.Track -> lastMetadataEdit.track
+                    is MetadataEditTarget.Album -> lastMetadataEdit.tracks.firstOrNull()
+                }
+                var extendedForEditor by remember(lastMetadataEdit) { mutableStateOf<ExtendedTrackMetadata?>(null) }
+                LaunchedEffect(lastMetadataEdit) {
+                    extendedForEditor = representativeTrack?.let { viewModel.fetchExtendedMetadata(it) }
+                        ?: ExtendedTrackMetadata()
+                }
+
+                // Closing the editor once a save actually finishes -- but only while the editor
+                // is still the live target, so a stale Done from a previous edit (still playing
+                // out its close animation via the mirror above) can't fire this again.
+                LaunchedEffect(metadataSaveState, metadataEditTarget) {
+                    if (metadataSaveState is MetadataSaveState.Done && metadataEditTarget != null) {
+                        viewModel.closeMetadataEditor()
+                    }
+                }
+
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+                ) {
+                    val extended = extendedForEditor
+                    if (extended != null) {
+                        MetadataEditorScreen(
+                            target = lastMetadataEdit,
+                            extended = extended,
+                            saveState = metadataSaveState,
+                            onSave = { fields -> viewModel.saveMetadata(lastMetadataEdit, fields) },
+                            onBack = { viewModel.closeMetadataEditor() }
+                        )
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            androidx.compose.material3.CircularProgressIndicator()
                         }
                     }
                 }
@@ -763,5 +910,6 @@ private data class LibraryDetailPayload(
         LibrarySortOption.DATE_ADDED,
         LibrarySortOption.ARTIST
     ),
-    val groupByDisc: Boolean = false
+    val groupByDisc: Boolean = false,
+    val onEditMetadata: (() -> Unit)? = null
 )

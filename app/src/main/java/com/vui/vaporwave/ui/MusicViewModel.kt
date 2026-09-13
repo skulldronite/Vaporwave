@@ -3,6 +3,9 @@ package com.vui.vaporwave.ui
 import android.app.Application
 import android.content.ComponentName
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import androidx.activity.result.IntentSenderRequest
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
@@ -12,14 +15,18 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.vui.vaporwave.data.MusicRepository
+import com.vui.vaporwave.data.tagging.MetadataFields
+import com.vui.vaporwave.data.tagging.TagSaveResult
 import com.vui.vaporwave.model.AlbumSummary
 import com.vui.vaporwave.model.ArtistSummary
 import com.vui.vaporwave.model.AudioTrack
+import com.vui.vaporwave.model.ExtendedTrackMetadata
 import com.vui.vaporwave.model.PlayStat
 import com.vui.vaporwave.model.Playlist
 import com.vui.vaporwave.service.VaporwavePlaybackService
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -42,6 +49,13 @@ enum class AppDestination {
     FILES,
     EFFECTS,
     SETTINGS
+}
+
+sealed class MetadataSaveState {
+    object Idle : MetadataSaveState()
+    object Saving : MetadataSaveState()
+    data class Done(val successCount: Int, val totalCount: Int) : MetadataSaveState()
+    data class Error(val message: String) : MetadataSaveState()
 }
 
 class MusicViewModel(application: Application) : AndroidViewModel(application) {
@@ -152,6 +166,23 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _playlistPickerTarget = MutableStateFlow<AudioTrack?>(null)
     val playlistPickerTarget: StateFlow<AudioTrack?> = _playlistPickerTarget.asStateFlow()
+
+    private val _trackDetailsTarget = MutableStateFlow<AudioTrack?>(null)
+    val trackDetailsTarget: StateFlow<AudioTrack?> = _trackDetailsTarget.asStateFlow()
+
+    private val _metadataEditTarget = MutableStateFlow<MetadataEditTarget?>(null)
+    val metadataEditTarget: StateFlow<MetadataEditTarget?> = _metadataEditTarget.asStateFlow()
+
+    private val _metadataSaveState = MutableStateFlow<MetadataSaveState>(MetadataSaveState.Idle)
+    val metadataSaveState: StateFlow<MetadataSaveState> = _metadataSaveState.asStateFlow()
+
+    // Surfaced to MainActivity, which is the only place that can actually launch an IntentSender
+    // (createWriteRequest's consent dialog, or the recoverable-access dialog Android hands back
+    // when a write is denied) -- the coroutine driving saveMetadata suspends on
+    // writeRequestContinuation until MainActivity reports back via onWriteRequestResult.
+    private val _pendingWriteRequest = MutableStateFlow<IntentSenderRequest?>(null)
+    val pendingWriteRequest: StateFlow<IntentSenderRequest?> = _pendingWriteRequest.asStateFlow()
+    private var writeRequestContinuation: CancellableContinuation<Boolean>? = null
 
     val albums: StateFlow<List<AlbumSummary>> = _allTracks.map { tracks ->
         tracks.groupBy { it.album }
@@ -592,6 +623,95 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissPlaylistPicker() {
         _playlistPickerTarget.value = null
     }
+
+    fun openTrackDetails(track: AudioTrack) {
+        _trackDetailsTarget.value = track
+    }
+
+    fun closeTrackDetails() {
+        _trackDetailsTarget.value = null
+    }
+
+    /** On-demand fetch backing Track Details' Genre/Recording Date/Path -- see [MusicRepository.fetchExtendedMetadata]. */
+    suspend fun fetchExtendedMetadata(track: AudioTrack): ExtendedTrackMetadata =
+        repository.fetchExtendedMetadata(track)
+
+    fun openMetadataEditor(target: MetadataEditTarget) {
+        _metadataEditTarget.value = target
+    }
+
+    fun closeMetadataEditor() {
+        _metadataEditTarget.value = null
+        _metadataSaveState.value = MetadataSaveState.Idle
+    }
+
+    fun resetMetadataSaveState() {
+        _metadataSaveState.value = MetadataSaveState.Idle
+    }
+
+    /**
+     * Writes [fields] into the file(s) behind [target] -- one track, or (for an album edit) every
+     * track in that album. Requests write access first where the platform supports asking for it
+     * up front (API 30+'s createWriteRequest), and otherwise falls back to the per-file recoverable
+     * access prompt Android hands back when a write is denied (API 29). Either way the actual
+     * IntentSender launch has to happen from MainActivity (only an Activity can do that), so this
+     * suspends on [pendingWriteRequest] being resolved via [onWriteRequestResult].
+     */
+    fun saveMetadata(target: MetadataEditTarget, fields: MetadataFields) {
+        viewModelScope.launch {
+            _metadataSaveState.value = MetadataSaveState.Saving
+            val tracks = when (target) {
+                is MetadataEditTarget.Track -> listOf(target.track)
+                is MetadataEditTarget.Album -> target.tracks
+            }
+            val uris = tracks.mapNotNull { it.contentUri }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && uris.isNotEmpty()) {
+                val pending = MediaStore.createWriteRequest(getApplication<Application>().contentResolver, uris)
+                val granted = awaitIntentSender(pending.intentSender)
+                if (!granted) {
+                    _metadataSaveState.value = MetadataSaveState.Error("Permission denied")
+                    return@launch
+                }
+            }
+
+            var successCount = 0
+            var lastError: String? = null
+            for (track in tracks) {
+                var result = repository.saveTrackMetadata(track, fields)
+                if (result is TagSaveResult.NeedsPermission) {
+                    val granted = awaitIntentSender(result.intentSender)
+                    result = if (granted) repository.saveTrackMetadata(track, fields)
+                    else TagSaveResult.Failure("${track.title}: permission denied")
+                }
+                when (result) {
+                    is TagSaveResult.Success -> successCount++
+                    is TagSaveResult.Failure -> lastError = result.message
+                    is TagSaveResult.NeedsPermission -> lastError = "${track.title}: permission denied"
+                }
+            }
+
+            if (successCount > 0) loadTracks(force = true)
+            _metadataSaveState.value = when {
+                lastError == null -> MetadataSaveState.Done(successCount, tracks.size)
+                successCount > 0 -> MetadataSaveState.Error("Saved $successCount of ${tracks.size} -- $lastError")
+                else -> MetadataSaveState.Error(lastError)
+            }
+        }
+    }
+
+    /** Called by MainActivity once it's launched the IntentSender from [pendingWriteRequest] and gotten a result. */
+    fun onWriteRequestResult(granted: Boolean) {
+        _pendingWriteRequest.value = null
+        writeRequestContinuation?.let { if (it.isActive) it.resume(granted) { _, _, _ -> } }
+        writeRequestContinuation = null
+    }
+
+    private suspend fun awaitIntentSender(intentSender: android.content.IntentSender): Boolean =
+        suspendCancellableCoroutine { continuation ->
+            writeRequestContinuation = continuation
+            _pendingWriteRequest.value = IntentSenderRequest.Builder(intentSender).build()
+        }
 
     fun createPlaylistAndAddTrack(name: String) {
         val track = _playlistPickerTarget.value ?: return
