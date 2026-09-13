@@ -2,6 +2,7 @@ package com.vui.vaporwave.ui.screens
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -9,16 +10,20 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -39,6 +44,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,20 +53,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import android.net.Uri
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.size.Size
 import com.vui.vaporwave.model.AudioTrack
+import kotlin.math.roundToInt
 
 /** Which of the artist screen's two layouts is showing. Always starts on Tracks when reopened. */
 enum class ArtistViewMode { TRACKS, ALBUMS }
@@ -241,6 +250,13 @@ fun ArtistDetailScreen(
                 // instead of only the rows currently on screen -- acceptable for a per-artist
                 // track/album count, but this is why it isn't done for a whole-library list.
                 item {
+                    // A swipe here triggers the same tab switch the pill does -- it's a threshold
+                    // gesture (drag far enough, then it snaps to the fixed crossfade below), not a
+                    // finger-tracking pager: a real pager needs to own its own horizontal drag axis
+                    // independently of this list's vertical one, which means pulling the header out
+                    // from being a LazyColumn item -- more than what's being asked for here.
+                    var dragAccumulatorPx by remember { mutableFloatStateOf(0f) }
+                    val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
                     AnimatedContent(
                         targetState = viewMode,
                         // `using null`, same reasoning as the library-detail stack transition in
@@ -248,7 +264,24 @@ fun ArtistDetailScreen(
                         // AnimatedContent's default SizeTransform would clip/zoom across that
                         // difference instead of just letting the crossfade play out in place.
                         transitionSpec = { fadeIn() togetherWith fadeOut() using null },
-                        label = "artistViewMode"
+                        label = "artistViewMode",
+                        modifier = Modifier.pointerInput(Unit) {
+                            detectHorizontalDragGestures(
+                                onDragStart = { dragAccumulatorPx = 0f },
+                                onDragEnd = {
+                                    if (dragAccumulatorPx <= -swipeThresholdPx) {
+                                        viewMode = ArtistViewMode.ALBUMS
+                                    } else if (dragAccumulatorPx >= swipeThresholdPx) {
+                                        viewMode = ArtistViewMode.TRACKS
+                                    }
+                                    dragAccumulatorPx = 0f
+                                },
+                                onDragCancel = { dragAccumulatorPx = 0f }
+                            ) { change, dragAmount ->
+                                dragAccumulatorPx += dragAmount
+                                change.consume()
+                            }
+                        }
                     ) { mode ->
                         Column(modifier = Modifier.fillMaxWidth()) {
                             when (mode) {
@@ -366,24 +399,55 @@ private fun ArtistModeToolbar(
 
 @Composable
 private fun ViewModeToggle(viewMode: ArtistViewMode, onChange: (ArtistViewMode) -> Unit) {
-    Row(
+    // Each label's own measured width (including its padding) -- NOT an even weighted split of
+    // the pill's total width. "Tracks" and "Albums" aren't the same length, and forcing an even
+    // split (via Modifier.weight) was what blew the whole pill up to fill all the space its parent
+    // Row offered it instead of just wrapping its own two short labels.
+    var tracksWidthPx by remember { mutableIntStateOf(0) }
+    var albumsWidthPx by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+
+    val targetOffsetPx = if (viewMode == ArtistViewMode.TRACKS) 0f else tracksWidthPx.toFloat()
+    val targetWidthPx = if (viewMode == ArtistViewMode.TRACKS) tracksWidthPx.toFloat() else albumsWidthPx.toFloat()
+    val animatedOffsetPx by animateFloatAsState(targetValue = targetOffsetPx, label = "pillHighlightOffset")
+    val animatedWidthPx by animateFloatAsState(targetValue = targetWidthPx, label = "pillHighlightWidth")
+
+    Box(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(2.dp)
+            // Resolves a concrete height from the Row's own content first, so the highlight below
+            // (which needs an explicit height to fillMaxHeight against) isn't asking this Box to
+            // size itself from a child that's simultaneously asking to fill that same size.
+            .height(IntrinsicSize.Min)
     ) {
-        listOf(ArtistViewMode.TRACKS to "Tracks", ArtistViewMode.ALBUMS to "Albums").forEach { (mode, label) ->
-            val selected = mode == viewMode
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+        if (tracksWidthPx > 0 && albumsWidthPx > 0) {
+            Box(
                 modifier = Modifier
+                    .offset { IntOffset(animatedOffsetPx.roundToInt(), 0) }
+                    .width(with(density) { animatedWidthPx.toDp() })
+                    .fillMaxHeight()
                     .clip(RoundedCornerShape(18.dp))
-                    .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent)
-                    .clickable { onChange(mode) }
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                    .background(MaterialTheme.colorScheme.primary)
             )
+        }
+        Row {
+            listOf(ArtistViewMode.TRACKS to "Tracks", ArtistViewMode.ALBUMS to "Albums").forEach { (mode, label) ->
+                val selected = mode == viewMode
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .onSizeChanged { size ->
+                            if (mode == ArtistViewMode.TRACKS) tracksWidthPx = size.width else albumsWidthPx = size.width
+                        }
+                        .clickable { onChange(mode) }
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                )
+            }
         }
     }
 }

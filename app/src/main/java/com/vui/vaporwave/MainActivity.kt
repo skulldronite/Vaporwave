@@ -621,23 +621,34 @@ class MainActivity : ComponentActivity() {
             // SaveableStateProvider key twice at once and crashed.
             val detailByIdentity = remember { mutableMapOf<Any, LibraryDetail>() }
             lastNonEmptyStack.forEach { detailByIdentity[it.stackIdentity()] = it }
-            AnimatedContent(
-                targetState = stackShape,
-                transitionSpec = {
-                    // `using null` because togetherWith otherwise attaches a default
-                    // SizeTransform (clipping, spring-animated) -- every level here is a
-                    // full-screen page, so there is never a size difference worth animating,
-                    // and any that did appear would show up as a clipped zoom.
-                    if (targetState.size > initialState.size) {
-                        (slideInVertically(initialOffsetY = { it }) + fadeIn()) togetherWith
-                            fadeOut() using null
-                    } else {
-                        fadeIn() togetherWith
-                            (slideOutVertically(targetOffsetY = { it }) + fadeOut()) using null
-                    }
-                },
-                label = "libraryDetailStack"
-            ) { animatedShape ->
+            // Wraps AnimatedContent so this backdrop sits entirely outside the per-slot transform
+            // it applies (each slot's own fade/slide, including the alpha ramp on push/pop) --
+            // a static, never-fading opaque layer behind both slots, so a slot fading through
+            // never reveals whatever's behind the *entire* overlay (the real Library screen
+            // underneath it) instead of another opaque surface.
+            Box(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
+                )
+                AnimatedContent(
+                    targetState = stackShape,
+                    transitionSpec = {
+                        // `using null` because togetherWith otherwise attaches a default
+                        // SizeTransform (clipping, spring-animated) -- every level here is a
+                        // full-screen page, so there is never a size difference worth animating,
+                        // and any that did appear would show up as a clipped zoom.
+                        if (targetState.size > initialState.size) {
+                            (slideInVertically(initialOffsetY = { it }) + fadeIn()) togetherWith
+                                fadeOut() using null
+                        } else {
+                            fadeIn() togetherWith
+                                (slideOutVertically(targetOffsetY = { it }) + fadeOut()) using null
+                        }
+                    },
+                    label = "libraryDetailStack"
+                ) { animatedShape ->
                 val detail = animatedShape.lastOrNull()?.let { detailByIdentity[it] }
                 if (detail != null) {
                     saveableStateHolder.SaveableStateProvider(key = detail.stackIdentity()) {
@@ -760,6 +771,7 @@ class MainActivity : ComponentActivity() {
                     }
                     }
                 }
+            }
             }
         }
 
