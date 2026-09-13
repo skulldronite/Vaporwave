@@ -6,7 +6,11 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import com.vui.vaporwave.data.tagging.AudioTagWriter
+import com.vui.vaporwave.data.tagging.MetadataFields
+import com.vui.vaporwave.data.tagging.TagSaveResult
 import com.vui.vaporwave.model.AudioTrack
+import com.vui.vaporwave.model.ExtendedTrackMetadata
 import com.vui.vaporwave.model.PlayStat
 import com.vui.vaporwave.model.Playlist
 import kotlinx.coroutines.Dispatchers
@@ -191,6 +195,101 @@ class MusicRepository(private val context: Context) {
             isDemoTrack = false,
             trackNumber = trackNumber
         )
+    }
+
+    /**
+     * Reads the handful of extra fields Track Details shows but the full-library scan doesn't
+     * bother with (see [ExtendedTrackMetadata]). Opens the file with MediaMetadataRetriever, so
+     * this is only ever called for one track at a time when its details screen is opened, never
+     * across the whole library.
+     */
+    suspend fun fetchExtendedMetadata(track: AudioTrack): ExtendedTrackMetadata = withContext(Dispatchers.IO) {
+        var genre: String? = null
+        var recordingDate: String? = null
+        var filePath: String? = null
+        var albumArtist: String? = null
+        var bitrateKbps = 0
+
+        val uri = track.contentUri
+        if (uri != null) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(context, uri)
+                genre = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)
+                recordingDate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE)
+                albumArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)
+                val brStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+                bitrateKbps = (brStr?.toIntOrNull() ?: 0) / 1000
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                try {
+                    retriever.release()
+                } catch (ignored: Exception) {}
+            }
+
+            // Only resolvable for MediaStore-scanned tracks -- externally opened files (SAF) have
+            // no on-disk path the app is given direct access to, just the content Uri itself.
+            if (uri.scheme == "content") {
+                try {
+                    context.contentResolver.query(
+                        uri,
+                        arrayOf(MediaStore.Audio.Media.DATA),
+                        null,
+                        null,
+                        null
+                    )?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            filePath = cursor.getString(0)
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+
+        ExtendedTrackMetadata(
+            genre = genre,
+            recordingDate = recordingDate,
+            filePath = filePath,
+            albumArtist = albumArtist,
+            bitrateKbps = bitrateKbps
+        )
+    }
+
+    /**
+     * Writes [fields] into the track's actual file, replacing its existing tags for the fields
+     * this editor supports. Requires the caller to already hold (or have just been granted) write
+     * access to [AudioTrack.contentUri] -- this makes no permission requests itself, it only
+     * surfaces [TagSaveResult.NeedsPermission] with the recoverable intent Android hands back
+     * when it doesn't have that access, so the caller (which owns the Activity needed to launch
+     * that intent) can ask and retry.
+     */
+    suspend fun saveTrackMetadata(track: AudioTrack, fields: MetadataFields): TagSaveResult = withContext(Dispatchers.IO) {
+        val uri = track.contentUri
+            ?: return@withContext TagSaveResult.Failure("${track.title}: no file location")
+        if (track.formatBadge in AudioTagWriter.unsupportedFormats) {
+            return@withContext TagSaveResult.Failure("${track.title}: editing ${track.formatBadge} tags isn't supported")
+        }
+        try {
+            val original = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: return@withContext TagSaveResult.Failure("${track.title}: couldn't read file")
+            val rewritten = AudioTagWriter.rewrite(original, track.formatBadge, fields)
+            // "rwt" truncates existing content before writing -- this is always a full
+            // replacement, never an in-place patch, so there's nothing stale left over.
+            context.contentResolver.openFileDescriptor(uri, "rwt")?.use { pfd ->
+                java.io.FileOutputStream(pfd.fileDescriptor).use { it.write(rewritten) }
+            } ?: return@withContext TagSaveResult.Failure("${track.title}: couldn't open file for writing")
+            TagSaveResult.Success
+        } catch (e: android.app.RecoverableSecurityException) {
+            TagSaveResult.NeedsPermission(e.userAction.actionIntent.intentSender)
+        } catch (e: UnsupportedOperationException) {
+            TagSaveResult.Failure("${track.title}: ${e.message}")
+        } catch (e: Exception) {
+            e.printStackTrace()
+            TagSaveResult.Failure("${track.title}: ${e.message ?: "failed to save"}")
+        }
     }
 
     /**

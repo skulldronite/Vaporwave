@@ -1,5 +1,7 @@
 package com.vui.vaporwave.ui.screens
 
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -40,16 +42,21 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FormatListNumbered
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SortByAlpha
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -563,6 +570,17 @@ private fun rememberTrackHighlight(
     return highlightedTrackId to onJump
 }
 
+/** Hands the track's own file off to whatever the user picks from the system share sheet. */
+private fun shareTrack(context: Context, track: AudioTrack) {
+    val uri = track.contentUri ?: return
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = track.mimeType ?: "audio/*"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, track.title))
+}
+
 /**
  * A single track row for album detail's disc-grouped layout: track number, title, and duration --
  * no artwork (already shown once in the hero above) and no artist/album line (both are already
@@ -573,6 +591,9 @@ private fun DiscTrackRow(
     track: AudioTrack,
     isPlayingThisTrack: Boolean,
     onClick: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+    onShare: () -> Unit,
+    onTrackDetails: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val backgroundColor by animateColorAsState(
@@ -583,6 +604,7 @@ private fun DiscTrackRow(
         },
         label = "disc_track_bg"
     )
+    var isMenuExpanded by remember { mutableStateOf(false) }
 
     Surface(
         modifier = modifier
@@ -594,7 +616,7 @@ private fun DiscTrackRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(modifier = Modifier.width(28.dp), contentAlignment = Alignment.Center) {
@@ -614,13 +636,12 @@ private fun DiscTrackRow(
                 }
             }
             Spacer(modifier = Modifier.width(12.dp))
+            // Wraps instead of ellipsizing -- a long title used to get cut off with "..." here.
             Text(
                 text = track.title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = if (isPlayingThisTrack) FontWeight.Bold else FontWeight.Medium,
                 color = if (isPlayingThisTrack) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
             Spacer(modifier = Modifier.width(12.dp))
@@ -629,6 +650,47 @@ private fun DiscTrackRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            // Small gap before the overflow button so it doesn't crowd right up against the
+            // duration it's now sitting next to.
+            Spacer(modifier = Modifier.width(4.dp))
+            Box {
+                IconButton(onClick = { isMenuExpanded = true }, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Track options",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                DropdownMenu(
+                    expanded = isMenuExpanded,
+                    onDismissRequest = { isMenuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Add to Playlist") },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null) },
+                        onClick = {
+                            isMenuExpanded = false
+                            onAddToPlaylist()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Share") },
+                        leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
+                        onClick = {
+                            isMenuExpanded = false
+                            onShare()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Track Details") },
+                        leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
+                        onClick = {
+                            isMenuExpanded = false
+                            onTrackDetails()
+                        }
+                    )
+                }
+            }
         }
     }
 }
@@ -890,7 +952,14 @@ fun DetailTrackList(
     // Album detail only: renders tracks grouped under "Disk N" headers (by file metadata's disc
     // number) using a track-number/title/duration row instead of the standard artwork-forward
     // TrackItem, sorted within each disc rather than across the whole album at once.
-    groupByDisc: Boolean = false
+    groupByDisc: Boolean = false,
+    // Only meaningful for groupByDisc rows, which carry their own overflow menu (album/artist
+    // detail's other rows use the shared TrackItem and don't get this menu at all yet).
+    onAddToPlaylist: (AudioTrack) -> Unit = {},
+    onOpenTrackDetails: (AudioTrack) -> Unit = {},
+    // Non-null only for album detail: pinned pencil icon (top right, alongside the back button)
+    // opening the metadata editor for the whole album.
+    onEditMetadata: (() -> Unit)? = null
 ) {
     var sortOption by remember { mutableStateOf(availableSortOptions.first()) }
     val sortedTracks = remember(tracks, sortOption, showToolbar) {
@@ -901,6 +970,7 @@ fun DetailTrackList(
     val isAtTop by remember {
         derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
     }
+    val context = LocalContext.current
 
     Column(modifier = modifier.fillMaxSize()) {
         if (heroArtwork != null && tracks.isNotEmpty()) {
@@ -1075,6 +1145,9 @@ fun DetailTrackList(
                                     track = track,
                                     isPlayingThisTrack = currentTrack?.id == track.id,
                                     onClick = { onTrackClick(track) },
+                                    onAddToPlaylist = { onAddToPlaylist(track) },
+                                    onShare = { shareTrack(context, track) },
+                                    onTrackDetails = { onOpenTrackDetails(track) },
                                     modifier = Modifier.padding(horizontal = 8.dp)
                                 )
                             }
@@ -1105,6 +1178,17 @@ fun DetailTrackList(
                         .padding(start = 4.dp, top = 4.dp)
                 ) {
                     Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+
+                if (onEditMetadata != null) {
+                    IconButton(
+                        onClick = onEditMetadata,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(end = 4.dp, top = 4.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit album details")
+                    }
                 }
 
                 if (showAlphabetScrollbar) {
