@@ -611,24 +611,53 @@ class MainActivity : ComponentActivity() {
             // where you left it. Keyed per stack entry so returning to the *same* entry restores
             // its own saved state, the same mechanism Jetpack Navigation uses for back stacks.
             val saveableStateHolder = rememberSaveableStateHolder()
-            AnimatedContent(
-                targetState = stackShape,
-                transitionSpec = {
-                    // `using null` because togetherWith otherwise attaches a default
-                    // SizeTransform (clipping, spring-animated) -- every level here is a
-                    // full-screen page, so there is never a size difference worth animating,
-                    // and any that did appear would show up as a clipped zoom.
-                    if (targetState.size > initialState.size) {
-                        (slideInVertically(initialOffsetY = { it }) + fadeIn()) togetherWith
-                            fadeOut() using null
-                    } else {
-                        fadeIn() togetherWith
-                            (slideOutVertically(targetOffsetY = { it }) + fadeOut()) using null
-                    }
-                },
-                label = "libraryDetailStack"
-            ) { _ ->
-                val detail = lastNonEmptyStack.lastOrNull()
+            // AnimatedContent composes two slots at once during a transition -- the exiting level
+            // and the entering one -- each called with its OWN frozen shape (the parameter below),
+            // not the live one. This map is what lets an exiting slot still resolve *its* detail
+            // (which may have already been popped off libraryDetailStack by the time it renders)
+            // instead of every slot falling back to whatever is newest. Entries are never removed:
+            // there are only ever a handful of stack levels in play, and getting this wrong sent
+            // both slots to the same detail during a push, which then registered the same
+            // SaveableStateProvider key twice at once and crashed.
+            val detailByIdentity = remember { mutableMapOf<Any, LibraryDetail>() }
+            lastNonEmptyStack.forEach { detailByIdentity[it.stackIdentity()] = it }
+            // Wraps AnimatedContent so this backdrop sits entirely outside the per-slot transform
+            // it applies (each slot's own fade/slide, including the alpha ramp on push/pop) --
+            // a static, never-fading opaque layer behind both slots, so a slot fading through
+            // never reveals whatever's behind the *entire* overlay (the real Library screen
+            // underneath it) instead of another opaque surface.
+            Box(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
+                )
+                AnimatedContent(
+                    targetState = stackShape,
+                    transitionSpec = {
+                        // `using null` because togetherWith otherwise attaches a default
+                        // SizeTransform (clipping, spring-animated) -- every level here is a
+                        // full-screen page, so there is never a size difference worth animating,
+                        // and any that did appear would show up as a clipped zoom.
+                        //
+                        // The slide itself is an explicit tween, not slideInVertically/
+                        // slideOutVertically's own default (spring-based) animationSpec -- a
+                        // spring settling into its target isn't perfectly critically damped, so it
+                        // was overshooting by a pixel or two right at the end and correcting back,
+                        // a barely-visible "judder" as a pushed screen finished sliding into place.
+                        // tween is a monotonic interpolation with no overshoot by construction.
+                        val slideSpec = tween<IntOffset>(durationMillis = 300, easing = FastOutSlowInEasing)
+                        if (targetState.size > initialState.size) {
+                            (slideInVertically(animationSpec = slideSpec, initialOffsetY = { it }) + fadeIn()) togetherWith
+                                fadeOut() using null
+                        } else {
+                            fadeIn() togetherWith
+                                (slideOutVertically(animationSpec = slideSpec, targetOffsetY = { it }) + fadeOut()) using null
+                        }
+                    },
+                    label = "libraryDetailStack"
+                ) { animatedShape ->
+                val detail = animatedShape.lastOrNull()?.let { detailByIdentity[it] }
                 if (detail != null) {
                     saveableStateHolder.SaveableStateProvider(key = detail.stackIdentity()) {
                     Box(modifier = Modifier.fillMaxSize()) {
@@ -750,6 +779,7 @@ class MainActivity : ComponentActivity() {
                     }
                     }
                 }
+            }
             }
         }
 

@@ -1,27 +1,37 @@
 package com.vui.vaporwave.ui.screens
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -38,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,20 +57,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import android.net.Uri
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.size.Size
 import com.vui.vaporwave.model.AudioTrack
+import kotlin.math.roundToInt
 
 /** Which of the artist screen's two layouts is showing. Always starts on Tracks when reopened. */
 enum class ArtistViewMode { TRACKS, ALBUMS }
@@ -125,6 +139,20 @@ fun ArtistDetailScreen(
     // level's identity, which is what actually lets this survive that dispose/recreate cycle.
     var viewMode by rememberSaveable { mutableStateOf(ArtistViewMode.TRACKS) }
     var albumSort by rememberSaveable { mutableStateOf(ArtistAlbumSortOption.NAME) }
+
+    // Tracks *why* viewMode is whatever it currently is, not *when* it became that -- deliberately
+    // plain remember (always starts false on a fresh composition), not rememberSaveable: only the
+    // pill/swipe's own handler below ever sets this true, so a restored viewMode (e.g. coming back
+    // to Albums after closing an album opened from this screen) never flips it, and the pill/
+    // content-switch animations both stay off until an actual tap or swipe happens. An earlier
+    // attempt guessed restoration finished "one frame after mount" and gated on that instead --
+    // wrong guess, since the animation still played, so this tracks the real cause directly rather
+    // than trying to time it.
+    var viewModeChangedByUser by remember { mutableStateOf(false) }
+    fun setViewMode(mode: ArtistViewMode) {
+        viewMode = mode
+        viewModeChangedByUser = true
+    }
 
     val allTracks = remember(albumGroups) { albumGroups.flatMap { it.tracks } }
     val tracksModeGroups = remember(albumGroups) {
@@ -224,54 +252,112 @@ fun ArtistDetailScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         ArtistModeToolbar(
                             viewMode = viewMode,
-                            onViewModeChange = { viewMode = it },
+                            onViewModeChange = { setViewMode(it) },
                             albumSort = albumSort,
                             onAlbumSortChange = { albumSort = it },
                             onShuffleClick = { onShufflePlay(allTracks) },
+                            animatePill = viewModeChangedByUser,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
 
-                when (viewMode) {
-                    ArtistViewMode.TRACKS -> {
-                        tracksModeGroups.forEachIndexed { index, group ->
-                            if (index > 0) {
-                                item(key = "gap_${group.name}") {
-                                    Spacer(modifier = Modifier.height(20.dp))
-                                }
+                // A single lazy item rather than the individual items/groups this used to be laid
+                // out as: AnimatedContent needs one bounded region it owns to crossfade between,
+                // it can't animate a transition across a variable range of a LazyColumn's own
+                // items. The tradeoff is that everything below the header is now composed eagerly
+                // instead of only the rows currently on screen -- acceptable for a per-artist
+                // track/album count, but this is why it isn't done for a whole-library list.
+                item {
+                    // A swipe here triggers the same tab switch the pill does -- it's a threshold
+                    // gesture (drag far enough, then it snaps to the fixed crossfade below), not a
+                    // finger-tracking pager: a real pager needs to own its own horizontal drag axis
+                    // independently of this list's vertical one, which means pulling the header out
+                    // from being a LazyColumn item -- more than what's being asked for here.
+                    var dragAccumulatorPx by remember { mutableFloatStateOf(0f) }
+                    val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
+                    AnimatedContent(
+                        targetState = viewMode,
+                        // `using null`, same reasoning as the library-detail stack transition in
+                        // MainActivity: Tracks and Albums content are rarely the same height, and
+                        // AnimatedContent's default SizeTransform would clip/zoom across that
+                        // difference instead of just letting the crossfade play out in place.
+                        transitionSpec = {
+                            if (!viewModeChangedByUser) {
+                                // Skips animating a restored value -- e.g. leaving an album that
+                                // was opened from the Albums tab recomposes this screen fresh, and
+                                // without this guard it visibly played the Tracks-to-Albums wipe
+                                // below as if the user had just switched tabs, instead of it
+                                // simply already having been on Albums.
+                                fadeIn(snap()) togetherWith fadeOut(snap())
+                            } else {
+                                // A directional wipe rather than a plain crossfade -- new content
+                                // slides in from the side matching whichever tab it's coming from,
+                                // old content slides out the opposite way, matching the swipe
+                                // gesture's own left/right sense.
+                                val direction = if (targetState == ArtistViewMode.ALBUMS) 1 else -1
+                                (slideInHorizontally(initialOffsetX = { width -> direction * width }) + fadeIn()) togetherWith
+                                    (slideOutHorizontally(targetOffsetX = { width -> -direction * width }) + fadeOut()) using null
                             }
-                            item(key = "header_${group.name}") {
-                                AlbumGroupHeader(group, modifier = Modifier.padding(horizontal = 8.dp))
-                            }
-                            items(items = group.tracks, key = { it.id }) { track ->
-                                DiscTrackRow(
-                                    track = track,
-                                    isPlayingThisTrack = currentTrack?.id == track.id,
-                                    onClick = { onTrackClick(track) },
-                                    onAddToPlaylist = { onAddToPlaylist(track) },
-                                    onShare = { shareTrack(context, track) },
-                                    onTrackDetails = { onOpenTrackDetails(track) },
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                )
+                        },
+                        label = "artistViewMode",
+                        modifier = Modifier.pointerInput(Unit) {
+                            detectHorizontalDragGestures(
+                                onDragStart = { dragAccumulatorPx = 0f },
+                                onDragEnd = {
+                                    if (dragAccumulatorPx <= -swipeThresholdPx) {
+                                        setViewMode(ArtistViewMode.ALBUMS)
+                                    } else if (dragAccumulatorPx >= swipeThresholdPx) {
+                                        setViewMode(ArtistViewMode.TRACKS)
+                                    }
+                                    dragAccumulatorPx = 0f
+                                },
+                                onDragCancel = { dragAccumulatorPx = 0f }
+                            ) { change, dragAmount ->
+                                dragAccumulatorPx += dragAmount
+                                change.consume()
                             }
                         }
-                    }
-                    ArtistViewMode.ALBUMS -> {
-                        items(albumsModeGroups.chunked(3), key = { row -> row.joinToString { it.name } }) { row ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                row.forEach { group ->
-                                    AlbumSquare(
-                                        group = group,
-                                        onClick = { onOpenAlbum(group.name) },
-                                        modifier = Modifier.weight(1f)
-                                    )
+                    ) { mode ->
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            when (mode) {
+                                ArtistViewMode.TRACKS -> {
+                                    tracksModeGroups.forEachIndexed { index, group ->
+                                        if (index > 0) {
+                                            Spacer(modifier = Modifier.height(20.dp))
+                                        }
+                                        AlbumGroupHeader(group, modifier = Modifier.padding(horizontal = 8.dp))
+                                        group.tracks.forEach { track ->
+                                            DiscTrackRow(
+                                                track = track,
+                                                isPlayingThisTrack = currentTrack?.id == track.id,
+                                                onClick = { onTrackClick(track) },
+                                                onAddToPlaylist = { onAddToPlaylist(track) },
+                                                onShare = { shareTrack(context, track) },
+                                                onTrackDetails = { onOpenTrackDetails(track) },
+                                                modifier = Modifier.padding(horizontal = 8.dp)
+                                            )
+                                        }
+                                    }
                                 }
-                                repeat(3 - row.size) {
-                                    Spacer(modifier = Modifier.weight(1f))
+                                ArtistViewMode.ALBUMS -> {
+                                    albumsModeGroups.chunked(3).forEach { row ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            row.forEach { group ->
+                                                AlbumSquare(
+                                                    group = group,
+                                                    onClick = { onOpenAlbum(group.name) },
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                            repeat(3 - row.size) {
+                                                Spacer(modifier = Modifier.weight(1f))
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -303,6 +389,7 @@ private fun ArtistModeToolbar(
     albumSort: ArtistAlbumSortOption,
     onAlbumSortChange: (ArtistAlbumSortOption) -> Unit,
     onShuffleClick: () -> Unit,
+    animatePill: Boolean,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -310,7 +397,7 @@ private fun ArtistModeToolbar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ViewModeToggle(viewMode = viewMode, onChange = onViewModeChange)
+        ViewModeToggle(viewMode = viewMode, onChange = onViewModeChange, animate = animatePill)
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             AnimatedVisibility(
@@ -348,25 +435,61 @@ private fun ArtistModeToolbar(
 }
 
 @Composable
-private fun ViewModeToggle(viewMode: ArtistViewMode, onChange: (ArtistViewMode) -> Unit) {
-    Row(
+private fun ViewModeToggle(viewMode: ArtistViewMode, onChange: (ArtistViewMode) -> Unit, animate: Boolean) {
+    // Each label's own measured width (including its padding) -- NOT an even weighted split of
+    // the pill's total width. "Tracks" and "Albums" aren't the same length, and forcing an even
+    // split (via Modifier.weight) was what blew the whole pill up to fill all the space its parent
+    // Row offered it instead of just wrapping its own two short labels.
+    var tracksWidthPx by remember { mutableIntStateOf(0) }
+    var albumsWidthPx by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+
+    val targetOffsetPx = if (viewMode == ArtistViewMode.TRACKS) 0f else tracksWidthPx.toFloat()
+    val targetWidthPx = if (viewMode == ArtistViewMode.TRACKS) tracksWidthPx.toFloat() else albumsWidthPx.toFloat()
+    // `animate == false` snaps instantly instead of sliding -- used while the caller's viewMode
+    // hasn't settled yet (e.g. right after this screen is restored coming back from an album), so
+    // that settling doesn't itself look like a user-triggered tab switch.
+    val offsetSpec = if (animate) spring<Float>() else snap()
+    val widthSpec = if (animate) spring<Float>() else snap()
+    val animatedOffsetPx by animateFloatAsState(targetValue = targetOffsetPx, animationSpec = offsetSpec, label = "pillHighlightOffset")
+    val animatedWidthPx by animateFloatAsState(targetValue = targetWidthPx, animationSpec = widthSpec, label = "pillHighlightWidth")
+
+    Box(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(2.dp)
+            // Resolves a concrete height from the Row's own content first, so the highlight below
+            // (which needs an explicit height to fillMaxHeight against) isn't asking this Box to
+            // size itself from a child that's simultaneously asking to fill that same size.
+            .height(IntrinsicSize.Min)
     ) {
-        listOf(ArtistViewMode.TRACKS to "Tracks", ArtistViewMode.ALBUMS to "Albums").forEach { (mode, label) ->
-            val selected = mode == viewMode
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+        if (tracksWidthPx > 0 && albumsWidthPx > 0) {
+            Box(
                 modifier = Modifier
+                    .offset { IntOffset(animatedOffsetPx.roundToInt(), 0) }
+                    .width(with(density) { animatedWidthPx.toDp() })
+                    .fillMaxHeight()
                     .clip(RoundedCornerShape(18.dp))
-                    .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent)
-                    .clickable { onChange(mode) }
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                    .background(MaterialTheme.colorScheme.primary)
             )
+        }
+        Row {
+            listOf(ArtistViewMode.TRACKS to "Tracks", ArtistViewMode.ALBUMS to "Albums").forEach { (mode, label) ->
+                val selected = mode == viewMode
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .onSizeChanged { size ->
+                            if (mode == ArtistViewMode.TRACKS) tracksWidthPx = size.width else albumsWidthPx = size.width
+                        }
+                        .clickable { onChange(mode) }
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                )
+            }
         }
     }
 }
