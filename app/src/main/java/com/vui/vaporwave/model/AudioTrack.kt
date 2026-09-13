@@ -29,7 +29,9 @@ data class AudioTrack(
     val isDemoTrack: Boolean = false,
     val dateAddedMs: Long = 0L,
     /** 1-based position within its album, from file metadata. 0 means the tag was absent. */
-    val trackNumber: Int = 0
+    val trackNumber: Int = 0,
+    /** Disc number for multi-disc albums, from file metadata. 0 for single-disc/untagged. */
+    val discNumber: Int = 0
 ) {
     /**
      * Human readable format identifier (e.g. FLAC, MP3, WAV, OPUS, AAC, OGG)

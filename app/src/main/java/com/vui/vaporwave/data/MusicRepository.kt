@@ -76,8 +76,12 @@ class MusicRepository(private val context: Context) {
                     // DATE_ADDED is stored in seconds since epoch; normalize to milliseconds.
                     val dateAddedMs = it.getLong(dateAddedCol) * 1000L
                     // MediaStore packs disc number into the thousands place (e.g. disc 2 track 3
-                    // is stored as 2003), so isolate the actual track number with % 1000.
-                    val trackNumber = it.getInt(trackCol) % 1000
+                    // is stored as 2003), so isolate the actual track number with % 1000 and the
+                    // disc number with integer division -- 0 for a plain, un-prefixed track
+                    // number, meaning a single-disc (or untagged) release.
+                    val trackColValue = it.getInt(trackCol)
+                    val trackNumber = trackColValue % 1000
+                    val discNumber = trackColValue / 1000
 
                     val contentUri = ContentUris.withAppendedId(
                         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
@@ -112,7 +116,8 @@ class MusicRepository(private val context: Context) {
                             sizeBytes = size,
                             isDemoTrack = false,
                             dateAddedMs = dateAddedMs,
-                            trackNumber = trackNumber
+                            trackNumber = trackNumber,
+                            discNumber = discNumber
                         )
                     )
                 }

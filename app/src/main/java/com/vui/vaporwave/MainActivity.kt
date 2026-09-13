@@ -604,9 +604,10 @@ class MainActivity : ComponentActivity() {
                                         // already shown in the hero image above the list.
                                         showTrackArtwork = false,
                                         availableSortOptions = listOf(
-                                            LibrarySortOption.NAME,
-                                            LibrarySortOption.TRACK_NUMBER
-                                        )
+                                            LibrarySortOption.SHORTEST,
+                                            LibrarySortOption.LONGEST
+                                        ),
+                                        groupByDisc = true
                                     )
                                 }
                                 is LibraryDetail.Artist -> {
@@ -646,6 +647,7 @@ class MainActivity : ComponentActivity() {
                                 heroArtwork = payload.heroArtwork,
                                 showTrackArtwork = payload.showTrackArtwork,
                                 availableSortOptions = payload.availableSortOptions,
+                                groupByDisc = payload.groupByDisc,
                                 modifier = Modifier.statusBarsPadding()
                             )
                         }
@@ -760,5 +762,6 @@ private data class LibraryDetailPayload(
         LibrarySortOption.NAME,
         LibrarySortOption.DATE_ADDED,
         LibrarySortOption.ARTIST
-    )
+    ),
+    val groupByDisc: Boolean = false
 )
