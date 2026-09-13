@@ -3,10 +3,14 @@ package com.vui.vaporwave.ui.screens
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -136,6 +140,20 @@ fun ArtistDetailScreen(
     var viewMode by rememberSaveable { mutableStateOf(ArtistViewMode.TRACKS) }
     var albumSort by rememberSaveable { mutableStateOf(ArtistAlbumSortOption.NAME) }
 
+    // Tracks *why* viewMode is whatever it currently is, not *when* it became that -- deliberately
+    // plain remember (always starts false on a fresh composition), not rememberSaveable: only the
+    // pill/swipe's own handler below ever sets this true, so a restored viewMode (e.g. coming back
+    // to Albums after closing an album opened from this screen) never flips it, and the pill/
+    // content-switch animations both stay off until an actual tap or swipe happens. An earlier
+    // attempt guessed restoration finished "one frame after mount" and gated on that instead --
+    // wrong guess, since the animation still played, so this tracks the real cause directly rather
+    // than trying to time it.
+    var viewModeChangedByUser by remember { mutableStateOf(false) }
+    fun setViewMode(mode: ArtistViewMode) {
+        viewMode = mode
+        viewModeChangedByUser = true
+    }
+
     val allTracks = remember(albumGroups) { albumGroups.flatMap { it.tracks } }
     val tracksModeGroups = remember(albumGroups) {
         albumGroups.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
@@ -234,10 +252,11 @@ fun ArtistDetailScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         ArtistModeToolbar(
                             viewMode = viewMode,
-                            onViewModeChange = { viewMode = it },
+                            onViewModeChange = { setViewMode(it) },
                             albumSort = albumSort,
                             onAlbumSortChange = { albumSort = it },
                             onShuffleClick = { onShufflePlay(allTracks) },
+                            animatePill = viewModeChangedByUser,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -263,16 +282,33 @@ fun ArtistDetailScreen(
                         // MainActivity: Tracks and Albums content are rarely the same height, and
                         // AnimatedContent's default SizeTransform would clip/zoom across that
                         // difference instead of just letting the crossfade play out in place.
-                        transitionSpec = { fadeIn() togetherWith fadeOut() using null },
+                        transitionSpec = {
+                            if (!viewModeChangedByUser) {
+                                // Skips animating a restored value -- e.g. leaving an album that
+                                // was opened from the Albums tab recomposes this screen fresh, and
+                                // without this guard it visibly played the Tracks-to-Albums wipe
+                                // below as if the user had just switched tabs, instead of it
+                                // simply already having been on Albums.
+                                fadeIn(snap()) togetherWith fadeOut(snap())
+                            } else {
+                                // A directional wipe rather than a plain crossfade -- new content
+                                // slides in from the side matching whichever tab it's coming from,
+                                // old content slides out the opposite way, matching the swipe
+                                // gesture's own left/right sense.
+                                val direction = if (targetState == ArtistViewMode.ALBUMS) 1 else -1
+                                (slideInHorizontally(initialOffsetX = { width -> direction * width }) + fadeIn()) togetherWith
+                                    (slideOutHorizontally(targetOffsetX = { width -> -direction * width }) + fadeOut()) using null
+                            }
+                        },
                         label = "artistViewMode",
                         modifier = Modifier.pointerInput(Unit) {
                             detectHorizontalDragGestures(
                                 onDragStart = { dragAccumulatorPx = 0f },
                                 onDragEnd = {
                                     if (dragAccumulatorPx <= -swipeThresholdPx) {
-                                        viewMode = ArtistViewMode.ALBUMS
+                                        setViewMode(ArtistViewMode.ALBUMS)
                                     } else if (dragAccumulatorPx >= swipeThresholdPx) {
-                                        viewMode = ArtistViewMode.TRACKS
+                                        setViewMode(ArtistViewMode.TRACKS)
                                     }
                                     dragAccumulatorPx = 0f
                                 },
@@ -353,6 +389,7 @@ private fun ArtistModeToolbar(
     albumSort: ArtistAlbumSortOption,
     onAlbumSortChange: (ArtistAlbumSortOption) -> Unit,
     onShuffleClick: () -> Unit,
+    animatePill: Boolean,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -360,7 +397,7 @@ private fun ArtistModeToolbar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ViewModeToggle(viewMode = viewMode, onChange = onViewModeChange)
+        ViewModeToggle(viewMode = viewMode, onChange = onViewModeChange, animate = animatePill)
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             AnimatedVisibility(
@@ -398,7 +435,7 @@ private fun ArtistModeToolbar(
 }
 
 @Composable
-private fun ViewModeToggle(viewMode: ArtistViewMode, onChange: (ArtistViewMode) -> Unit) {
+private fun ViewModeToggle(viewMode: ArtistViewMode, onChange: (ArtistViewMode) -> Unit, animate: Boolean) {
     // Each label's own measured width (including its padding) -- NOT an even weighted split of
     // the pill's total width. "Tracks" and "Albums" aren't the same length, and forcing an even
     // split (via Modifier.weight) was what blew the whole pill up to fill all the space its parent
@@ -409,8 +446,13 @@ private fun ViewModeToggle(viewMode: ArtistViewMode, onChange: (ArtistViewMode) 
 
     val targetOffsetPx = if (viewMode == ArtistViewMode.TRACKS) 0f else tracksWidthPx.toFloat()
     val targetWidthPx = if (viewMode == ArtistViewMode.TRACKS) tracksWidthPx.toFloat() else albumsWidthPx.toFloat()
-    val animatedOffsetPx by animateFloatAsState(targetValue = targetOffsetPx, label = "pillHighlightOffset")
-    val animatedWidthPx by animateFloatAsState(targetValue = targetWidthPx, label = "pillHighlightWidth")
+    // `animate == false` snaps instantly instead of sliding -- used while the caller's viewMode
+    // hasn't settled yet (e.g. right after this screen is restored coming back from an album), so
+    // that settling doesn't itself look like a user-triggered tab switch.
+    val offsetSpec = if (animate) spring<Float>() else snap()
+    val widthSpec = if (animate) spring<Float>() else snap()
+    val animatedOffsetPx by animateFloatAsState(targetValue = targetOffsetPx, animationSpec = offsetSpec, label = "pillHighlightOffset")
+    val animatedWidthPx by animateFloatAsState(targetValue = targetWidthPx, animationSpec = widthSpec, label = "pillHighlightWidth")
 
     Box(
         modifier = Modifier
