@@ -611,6 +611,16 @@ class MainActivity : ComponentActivity() {
             // where you left it. Keyed per stack entry so returning to the *same* entry restores
             // its own saved state, the same mechanism Jetpack Navigation uses for back stacks.
             val saveableStateHolder = rememberSaveableStateHolder()
+            // AnimatedContent composes two slots at once during a transition -- the exiting level
+            // and the entering one -- each called with its OWN frozen shape (the parameter below),
+            // not the live one. This map is what lets an exiting slot still resolve *its* detail
+            // (which may have already been popped off libraryDetailStack by the time it renders)
+            // instead of every slot falling back to whatever is newest. Entries are never removed:
+            // there are only ever a handful of stack levels in play, and getting this wrong sent
+            // both slots to the same detail during a push, which then registered the same
+            // SaveableStateProvider key twice at once and crashed.
+            val detailByIdentity = remember { mutableMapOf<Any, LibraryDetail>() }
+            lastNonEmptyStack.forEach { detailByIdentity[it.stackIdentity()] = it }
             AnimatedContent(
                 targetState = stackShape,
                 transitionSpec = {
@@ -627,8 +637,8 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 label = "libraryDetailStack"
-            ) { _ ->
-                val detail = lastNonEmptyStack.lastOrNull()
+            ) { animatedShape ->
+                val detail = animatedShape.lastOrNull()?.let { detailByIdentity[it] }
                 if (detail != null) {
                     saveableStateHolder.SaveableStateProvider(key = detail.stackIdentity()) {
                     Box(modifier = Modifier.fillMaxSize()) {

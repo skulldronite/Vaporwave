@@ -1,10 +1,12 @@
 package com.vui.vaporwave.ui.screens
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,7 +23,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -233,45 +234,61 @@ fun ArtistDetailScreen(
                     }
                 }
 
-                when (viewMode) {
-                    ArtistViewMode.TRACKS -> {
-                        tracksModeGroups.forEachIndexed { index, group ->
-                            if (index > 0) {
-                                item(key = "gap_${group.name}") {
-                                    Spacer(modifier = Modifier.height(20.dp))
+                // A single lazy item rather than the individual items/groups this used to be laid
+                // out as: AnimatedContent needs one bounded region it owns to crossfade between,
+                // it can't animate a transition across a variable range of a LazyColumn's own
+                // items. The tradeoff is that everything below the header is now composed eagerly
+                // instead of only the rows currently on screen -- acceptable for a per-artist
+                // track/album count, but this is why it isn't done for a whole-library list.
+                item {
+                    AnimatedContent(
+                        targetState = viewMode,
+                        // `using null`, same reasoning as the library-detail stack transition in
+                        // MainActivity: Tracks and Albums content are rarely the same height, and
+                        // AnimatedContent's default SizeTransform would clip/zoom across that
+                        // difference instead of just letting the crossfade play out in place.
+                        transitionSpec = { fadeIn() togetherWith fadeOut() using null },
+                        label = "artistViewMode"
+                    ) { mode ->
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            when (mode) {
+                                ArtistViewMode.TRACKS -> {
+                                    tracksModeGroups.forEachIndexed { index, group ->
+                                        if (index > 0) {
+                                            Spacer(modifier = Modifier.height(20.dp))
+                                        }
+                                        AlbumGroupHeader(group, modifier = Modifier.padding(horizontal = 8.dp))
+                                        group.tracks.forEach { track ->
+                                            DiscTrackRow(
+                                                track = track,
+                                                isPlayingThisTrack = currentTrack?.id == track.id,
+                                                onClick = { onTrackClick(track) },
+                                                onAddToPlaylist = { onAddToPlaylist(track) },
+                                                onShare = { shareTrack(context, track) },
+                                                onTrackDetails = { onOpenTrackDetails(track) },
+                                                modifier = Modifier.padding(horizontal = 8.dp)
+                                            )
+                                        }
+                                    }
                                 }
-                            }
-                            item(key = "header_${group.name}") {
-                                AlbumGroupHeader(group, modifier = Modifier.padding(horizontal = 8.dp))
-                            }
-                            items(items = group.tracks, key = { it.id }) { track ->
-                                DiscTrackRow(
-                                    track = track,
-                                    isPlayingThisTrack = currentTrack?.id == track.id,
-                                    onClick = { onTrackClick(track) },
-                                    onAddToPlaylist = { onAddToPlaylist(track) },
-                                    onShare = { shareTrack(context, track) },
-                                    onTrackDetails = { onOpenTrackDetails(track) },
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                )
-                            }
-                        }
-                    }
-                    ArtistViewMode.ALBUMS -> {
-                        items(albumsModeGroups.chunked(3), key = { row -> row.joinToString { it.name } }) { row ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                row.forEach { group ->
-                                    AlbumSquare(
-                                        group = group,
-                                        onClick = { onOpenAlbum(group.name) },
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                                repeat(3 - row.size) {
-                                    Spacer(modifier = Modifier.weight(1f))
+                                ArtistViewMode.ALBUMS -> {
+                                    albumsModeGroups.chunked(3).forEach { row ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            row.forEach { group ->
+                                                AlbumSquare(
+                                                    group = group,
+                                                    onClick = { onOpenAlbum(group.name) },
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                            repeat(3 - row.size) {
+                                                Spacer(modifier = Modifier.weight(1f))
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
