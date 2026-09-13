@@ -79,6 +79,7 @@ fun MetadataEditorScreen(
     modifier: Modifier = Modifier
 ) {
     val isAlbumTarget = target is MetadataEditTarget.Album
+    val headerTitle = if (isAlbumTarget) "Edit Album" else "Edit Track"
     val initialArtworkUri = when (target) {
         is MetadataEditTarget.Track -> target.track.artworkUri
         is MetadataEditTarget.Album -> target.artworkUri
@@ -141,7 +142,7 @@ fun MetadataEditorScreen(
         ) {
             TextButton(onClick = onBack, enabled = !isSaving) { Text("Close") }
             Text(
-                text = if (isAlbumTarget) "Edit Album" else "Edit Track",
+                text = headerTitle,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )

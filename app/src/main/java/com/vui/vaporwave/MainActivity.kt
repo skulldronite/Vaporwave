@@ -56,6 +56,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -84,7 +85,9 @@ import com.vui.vaporwave.ui.components.MiniPlayer
 import com.vui.vaporwave.ui.components.NowPlayingSheet
 import com.vui.vaporwave.ui.components.PlaylistPickerDialog
 import com.vui.vaporwave.ui.components.VaporwaveTopBar
+import com.vui.vaporwave.ui.screens.ArtistDetailScreen
 import com.vui.vaporwave.ui.screens.DetailTrackList
+import com.vui.vaporwave.ui.screens.groupArtistTracksByAlbum
 import com.vui.vaporwave.ui.screens.EffectsScreen
 import com.vui.vaporwave.ui.screens.FilesScreen
 import com.vui.vaporwave.ui.screens.HeroArtwork
@@ -601,6 +604,13 @@ class MainActivity : ComponentActivity() {
             // Keyed by the stack's shape (which entries, not their internal fields) so a field
             // changing on the current entry can never accidentally trigger this transition.
             val stackShape = lastNonEmptyStack.map { it.stackIdentity() }
+            // AnimatedContent below fully disposes and later recreates each level's content when
+            // the stack shape changes (e.g. pushing an album on top of an artist) -- without this,
+            // any remember{} state inside that level (like which tab the artist screen was on) is
+            // gone by the time you navigate back to it, resetting to its initial value instead of
+            // where you left it. Keyed per stack entry so returning to the *same* entry restores
+            // its own saved state, the same mechanism Jetpack Navigation uses for back stacks.
+            val saveableStateHolder = rememberSaveableStateHolder()
             AnimatedContent(
                 targetState = stackShape,
                 transitionSpec = {
@@ -620,6 +630,7 @@ class MainActivity : ComponentActivity() {
             ) { _ ->
                 val detail = lastNonEmptyStack.lastOrNull()
                 if (detail != null) {
+                    saveableStateHolder.SaveableStateProvider(key = detail.stackIdentity()) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Surface(
                             modifier = Modifier.fillMaxSize(),
@@ -629,80 +640,91 @@ class MainActivity : ComponentActivity() {
                             // same kind of lifted card rather than a flat, square-cornered page.
                             shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
                         ) {
-                            val payload = when (detail) {
-                                is LibraryDetail.Album -> {
-                                    val albumTracks = allTracks.filter { it.album == detail.name }
-                                    val artworkUri = albums.find { it.name == detail.name }?.artworkUri
-                                    val totalMs = albumTracks.sumOf { it.durationMs }
-                                    LibraryDetailPayload(
-                                        title = detail.name,
-                                        subtitle = "${albumTracks.size} songs • ${formatTotalDuration(totalMs)}",
-                                        tracks = albumTracks,
-                                        showToolbar = true,
-                                        heroArtwork = HeroArtwork(artworkUri, Icons.Default.Album),
-                                        // Every row would otherwise repeat the same artwork
-                                        // already shown in the hero image above the list.
-                                        showTrackArtwork = false,
-                                        availableSortOptions = listOf(
-                                            LibrarySortOption.SHORTEST,
-                                            LibrarySortOption.LONGEST
-                                        ),
-                                        groupByDisc = true,
-                                        onEditMetadata = {
-                                            viewModel.openMetadataEditor(
-                                                MetadataEditTarget.Album(
-                                                    name = detail.name,
-                                                    artist = albumTracks.firstOrNull()?.artist ?: "",
-                                                    artworkUri = artworkUri,
-                                                    tracks = albumTracks
+                            if (detail is LibraryDetail.Artist) {
+                                val artistTracks = allTracks.filter { it.artist == detail.name }
+                                val artworkUri = artists.find { it.name == detail.name }?.artworkUri
+                                val totalMs = artistTracks.sumOf { it.durationMs }
+                                val albumGroups = remember(artistTracks) { groupArtistTracksByAlbum(artistTracks) }
+                                ArtistDetailScreen(
+                                    title = detail.name,
+                                    subtitle = "${artistTracks.size} songs • ${formatTotalDuration(totalMs)}",
+                                    heroArtworkUri = artworkUri,
+                                    albumGroups = albumGroups,
+                                    currentTrack = currentTrack,
+                                    onBack = { viewModel.closeLibraryDetail() },
+                                    onTrackClick = { track -> viewModel.playTrack(track, artistTracks) },
+                                    onOpenAlbum = { albumName -> viewModel.openLibraryDetail(LibraryDetail.Album(albumName)) },
+                                    onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
+                                    onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
+                                    onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
+                                    modifier = Modifier.statusBarsPadding()
+                                )
+                            } else {
+                                val payload = when (detail) {
+                                    is LibraryDetail.Album -> {
+                                        val albumTracks = allTracks.filter { it.album == detail.name }
+                                        val artworkUri = albums.find { it.name == detail.name }?.artworkUri
+                                        val totalMs = albumTracks.sumOf { it.durationMs }
+                                        LibraryDetailPayload(
+                                            title = detail.name,
+                                            subtitle = "${albumTracks.size} songs • ${formatTotalDuration(totalMs)}",
+                                            tracks = albumTracks,
+                                            showToolbar = true,
+                                            heroArtwork = HeroArtwork(artworkUri, Icons.Default.Album),
+                                            // Every row would otherwise repeat the same artwork
+                                            // already shown in the hero image above the list.
+                                            showTrackArtwork = false,
+                                            availableSortOptions = listOf(
+                                                LibrarySortOption.SHORTEST,
+                                                LibrarySortOption.LONGEST
+                                            ),
+                                            groupByDisc = true,
+                                            onEditMetadata = {
+                                                viewModel.openMetadataEditor(
+                                                    MetadataEditTarget.Album(
+                                                        name = detail.name,
+                                                        artist = albumTracks.firstOrNull()?.artist ?: "",
+                                                        artworkUri = artworkUri,
+                                                        tracks = albumTracks
+                                                    )
                                                 )
-                                            )
-                                        }
-                                    )
-                                }
-                                is LibraryDetail.Artist -> {
-                                    val artistTracks = allTracks.filter { it.artist == detail.name }
-                                    val artworkUri = artists.find { it.name == detail.name }?.artworkUri
-                                    LibraryDetailPayload(
-                                        title = detail.name,
-                                        subtitle = "${artistTracks.size} songs",
-                                        tracks = artistTracks,
-                                        showToolbar = true,
-                                        heroArtwork = HeroArtwork(artworkUri, Icons.Default.Person)
-                                    )
-                                }
-                                is LibraryDetail.PlaylistDetail -> {
-                                    val playlist = playlists.find { it.id == detail.playlistId }
-                                    val playlistTracks = playlist?.trackIds.orEmpty().mapNotNull { id -> allTracks.find { it.id == id } }
-                                    LibraryDetailPayload(playlist?.name ?: "Playlist", "${playlistTracks.size} songs", playlistTracks, showToolbar = true)
-                                }
-                                is LibraryDetail.Spotlight -> {
-                                    val categoryTracks = when (detail.category) {
-                                        SpotlightCategory.RECENTLY_ADDED -> recentlyAddedTracks
-                                        SpotlightCategory.MOST_PLAYED -> mostPlayedTracks
-                                        SpotlightCategory.RECENTLY_PLAYED -> recentlyPlayedTracks
+                                            }
+                                        )
                                     }
-                                    LibraryDetailPayload(detail.category.label, "${categoryTracks.size} songs", categoryTracks, showToolbar = false)
+                                    is LibraryDetail.PlaylistDetail -> {
+                                        val playlist = playlists.find { it.id == detail.playlistId }
+                                        val playlistTracks = playlist?.trackIds.orEmpty().mapNotNull { id -> allTracks.find { it.id == id } }
+                                        LibraryDetailPayload(playlist?.name ?: "Playlist", "${playlistTracks.size} songs", playlistTracks, showToolbar = true)
+                                    }
+                                    is LibraryDetail.Spotlight -> {
+                                        val categoryTracks = when (detail.category) {
+                                            SpotlightCategory.RECENTLY_ADDED -> recentlyAddedTracks
+                                            SpotlightCategory.MOST_PLAYED -> mostPlayedTracks
+                                            SpotlightCategory.RECENTLY_PLAYED -> recentlyPlayedTracks
+                                        }
+                                        LibraryDetailPayload(detail.category.label, "${categoryTracks.size} songs", categoryTracks, showToolbar = false)
+                                    }
+                                    is LibraryDetail.Artist -> error("handled above")
                                 }
+                                DetailTrackList(
+                                    title = payload.title,
+                                    subtitle = payload.subtitle,
+                                    tracks = payload.tracks,
+                                    currentTrack = currentTrack,
+                                    onBack = { viewModel.closeLibraryDetail() },
+                                    onTrackClick = { track -> viewModel.playTrack(track, payload.tracks) },
+                                    onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
+                                    showToolbar = payload.showToolbar,
+                                    heroArtwork = payload.heroArtwork,
+                                    showTrackArtwork = payload.showTrackArtwork,
+                                    availableSortOptions = payload.availableSortOptions,
+                                    groupByDisc = payload.groupByDisc,
+                                    onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
+                                    onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
+                                    onEditMetadata = payload.onEditMetadata,
+                                    modifier = Modifier.statusBarsPadding()
+                                )
                             }
-                            DetailTrackList(
-                                title = payload.title,
-                                subtitle = payload.subtitle,
-                                tracks = payload.tracks,
-                                currentTrack = currentTrack,
-                                onBack = { viewModel.closeLibraryDetail() },
-                                onTrackClick = { track -> viewModel.playTrack(track, payload.tracks) },
-                                onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
-                                showToolbar = payload.showToolbar,
-                                heroArtwork = payload.heroArtwork,
-                                showTrackArtwork = payload.showTrackArtwork,
-                                availableSortOptions = payload.availableSortOptions,
-                                groupByDisc = payload.groupByDisc,
-                                onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
-                                onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
-                                onEditMetadata = payload.onEditMetadata,
-                                modifier = Modifier.statusBarsPadding()
-                            )
                         }
 
                         // The Scaffold's own mini player is hidden behind this overlay (it fully
@@ -725,6 +747,7 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.align(Alignment.BottomCenter)
                             )
                         }
+                    }
                     }
                 }
             }

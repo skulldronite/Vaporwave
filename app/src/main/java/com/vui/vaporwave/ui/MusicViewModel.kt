@@ -650,8 +650,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Writes [fields] into the file(s) behind [target] -- one track, or (for an album edit) every
-     * track in that album. Requests write access first where the platform supports asking for it
+     * Writes [fields] into the file(s) behind [target] -- one track, or (for an album/artist edit)
+     * every track under it. Requests write access first where the platform supports asking for it
      * up front (API 30+'s createWriteRequest), and otherwise falls back to the per-file recoverable
      * access prompt Android hands back when a write is denied (API 29). Either way the actual
      * IntentSender launch has to happen from MainActivity (only an Activity can do that), so this
@@ -678,10 +678,23 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             var successCount = 0
             var lastError: String? = null
             for (track in tracks) {
-                var result = repository.saveTrackMetadata(track, fields)
+                // An album batch edit only ever changes the fields shared across the whole album --
+                // title and track/disc number are always that one track's own. Without this,
+                // saving with those fields left blank in the editor (they're hidden there for
+                // exactly this reason) would blank those tags on every track in the album instead
+                // of leaving them alone.
+                val perTrackFields = when (target) {
+                    is MetadataEditTarget.Track -> fields
+                    is MetadataEditTarget.Album -> fields.copy(
+                        title = track.title,
+                        trackNumber = track.trackNumber,
+                        discNumber = track.discNumber
+                    )
+                }
+                var result = repository.saveTrackMetadata(track, perTrackFields)
                 if (result is TagSaveResult.NeedsPermission) {
                     val granted = awaitIntentSender(result.intentSender)
-                    result = if (granted) repository.saveTrackMetadata(track, fields)
+                    result = if (granted) repository.saveTrackMetadata(track, perTrackFields)
                     else TagSaveResult.Failure("${track.title}: permission denied")
                 }
                 when (result) {
