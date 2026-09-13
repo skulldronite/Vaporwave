@@ -571,7 +571,7 @@ private fun rememberTrackHighlight(
 }
 
 /** Hands the track's own file off to whatever the user picks from the system share sheet. */
-private fun shareTrack(context: Context, track: AudioTrack) {
+fun shareTrack(context: Context, track: AudioTrack) {
     val uri = track.contentUri ?: return
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = track.mimeType ?: "audio/*"
@@ -587,14 +587,18 @@ private fun shareTrack(context: Context, track: AudioTrack) {
  * known from the album context), unlike the general-purpose TrackItem used elsewhere.
  */
 @Composable
-private fun DiscTrackRow(
+fun DiscTrackRow(
     track: AudioTrack,
     isPlayingThisTrack: Boolean,
     onClick: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onShare: () -> Unit,
     onTrackDetails: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // Album detail shows the track number here; artist detail's Tracks view (which groups by
+    // album already, so a track number would be redundant/less useful) shows the disc number
+    // instead -- this is just which of the two the caller wants blank-if-zero in that slot.
+    leadingNumber: Int = track.trackNumber
 ) {
     val backgroundColor by animateColorAsState(
         targetValue = if (isPlayingThisTrack) {
@@ -622,9 +626,9 @@ private fun DiscTrackRow(
             Box(modifier = Modifier.width(28.dp), contentAlignment = Alignment.Center) {
                 // Blank rather than "0" when the tag was absent, same convention as TrackItem's
                 // own track-number slot.
-                if (track.trackNumber > 0) {
+                if (leadingNumber > 0) {
                     Text(
-                        text = track.trackNumber.toString(),
+                        text = leadingNumber.toString(),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = if (isPlayingThisTrack) FontWeight.Bold else FontWeight.Normal,
                         color = if (isPlayingThisTrack) {

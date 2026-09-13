@@ -31,7 +31,9 @@ data class AudioTrack(
     /** 1-based position within its album, from file metadata. 0 means the tag was absent. */
     val trackNumber: Int = 0,
     /** Disc number for multi-disc albums, from file metadata. 0 for single-disc/untagged. */
-    val discNumber: Int = 0
+    val discNumber: Int = 0,
+    /** Release year from file metadata, straight from MediaStore's own YEAR column. 0 if untagged. */
+    val year: Int = 0
 ) {
     /**
      * Human readable format identifier (e.g. FLAC, MP3, WAV, OPUS, AAC, OGG)

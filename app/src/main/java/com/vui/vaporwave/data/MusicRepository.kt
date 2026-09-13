@@ -41,7 +41,8 @@ class MusicRepository(private val context: Context) {
             MediaStore.Audio.Media.MIME_TYPE,
             MediaStore.Audio.Media.SIZE,
             MediaStore.Audio.Media.DATE_ADDED,
-            MediaStore.Audio.Media.TRACK
+            MediaStore.Audio.Media.TRACK,
+            MediaStore.Audio.Media.YEAR
         )
 
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.DURATION} >= 5000"
@@ -67,6 +68,7 @@ class MusicRepository(private val context: Context) {
                 val sizeCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE)
                 val dateAddedCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
                 val trackCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.TRACK)
+                val yearCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.YEAR)
 
                 while (it.moveToNext()) {
                     val id = it.getLong(idCol)
@@ -86,6 +88,7 @@ class MusicRepository(private val context: Context) {
                     val trackColValue = it.getInt(trackCol)
                     val trackNumber = trackColValue % 1000
                     val discNumber = trackColValue / 1000
+                    val year = it.getInt(yearCol)
 
                     val contentUri = ContentUris.withAppendedId(
                         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
@@ -121,7 +124,8 @@ class MusicRepository(private val context: Context) {
                             isDemoTrack = false,
                             dateAddedMs = dateAddedMs,
                             trackNumber = trackNumber,
-                            discNumber = discNumber
+                            discNumber = discNumber,
+                            year = year
                         )
                     )
                 }
