@@ -1,4 +1,4 @@
-package com.vui.vaporwave.ui.screens
+﻿package com.vui.vaporwave.ui.screens
 
 import android.content.Context
 import android.content.Intent
@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FormatListNumbered
@@ -83,6 +84,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -120,6 +122,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import java.util.Locale
 
 private val ALPHABET_SCROLLBAR_WIDTH = 28.dp
 private val PRECISE_SCROLLBAR_WIDTH = 20.dp
@@ -133,7 +136,9 @@ enum class LibrarySortOption(val label: String, val icon: ImageVector) {
     ARTIST("Artist", Icons.Default.Person),
     TRACK_NUMBER("Track Number", Icons.Default.FormatListNumbered),
     SHORTEST("Shortest First", Icons.Default.ArrowUpward),
-    LONGEST("Longest First", Icons.Default.ArrowDownward)
+    LONGEST("Longest First", Icons.Default.ArrowDownward),
+    MOST_TRACKS("Most Tracks", Icons.Default.ArrowDownward),
+    LEAST_TRACKS("Least Tracks", Icons.Default.ArrowUpward)
 }
 
 @Composable
@@ -159,6 +164,8 @@ fun LibraryScreen(
     onOpenArtist: (String) -> Unit,
     onOpenPlaylist: (Long) -> Unit,
     onOpenSpotlight: (SpotlightCategory) -> Unit,
+    onAddToPlaylist: (AudioTrack) -> Unit = {},
+    onOpenTrackDetails: (AudioTrack) -> Unit = {},
     modifier: Modifier = Modifier,
     onPullProgressChanged: (Float) -> Unit = {},
     isOverlayOpen: Boolean = false
@@ -363,32 +370,42 @@ fun LibraryScreen(
                 LibraryTab.ALBUMS -> {
                     AlbumsList(
                         albums = albums,
-                        onAlbumClick = onOpenAlbum
+                        onAlbumClick = onOpenAlbum,
+                        onShuffleClick = { onShufflePlay(allTracks) }
                     )
                 }
                 LibraryTab.FAVOURITES -> {
+                    val context = LocalContext.current
                     SimpleTrackList(
                         tracks = favouriteTracks,
                         currentTrack = currentTrack,
                         emptyIcon = Icons.Default.Favorite,
                         emptyMessage = "No favourites yet.\nTap the heart on Now Playing to add one.",
                         onTrackClick = { track -> onTrackClick(track, favouriteTracks) },
-                        onShufflePlay = onShufflePlay
+                        onShufflePlay = onShufflePlay,
+                        onAddToPlaylist = onAddToPlaylist,
+                        onShare = { track -> shareTrack(context, track) },
+                        onOpenTrackDetails = onOpenTrackDetails
                     )
                 }
                 LibraryTab.TRACKS -> {
+                    val context = LocalContext.current
                     TracksList(
                         tracks = tracks,
                         currentTrack = currentTrack,
                         searchQuery = searchQuery,
                         onTrackClick = { track -> onTrackClick(track, tracks) },
                         onOpenFileClick = onOpenFileClick,
-                        onShufflePlay = onShufflePlay
+                        onShufflePlay = onShufflePlay,
+                        onAddToPlaylist = onAddToPlaylist,
+                        onShare = { track -> shareTrack(context, track) },
+                        onOpenTrackDetails = onOpenTrackDetails
                     )
                 }
                 LibraryTab.PLAYLISTS -> {
                     PlaylistsList(
                         playlists = playlists,
+                        allTracks = allTracks,
                         onPlaylistClick = { onOpenPlaylist(it.id) },
                         recentlyAddedTrack = recentlyAddedTracks.firstOrNull(),
                         mostPlayedTrack = mostPlayedTracks.firstOrNull(),
@@ -417,6 +434,9 @@ private fun TracksList(
     onTrackClick: (AudioTrack) -> Unit,
     onOpenFileClick: () -> Unit,
     onShufflePlay: (List<AudioTrack>) -> Unit,
+    onAddToPlaylist: (AudioTrack) -> Unit = {},
+    onShare: (AudioTrack) -> Unit = {},
+    onOpenTrackDetails: (AudioTrack) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (tracks.isEmpty()) {
@@ -498,7 +518,10 @@ private fun TracksList(
                             isPlayingThisTrack = isPlayingThis,
                             onClick = { onTrackClick(track) },
                             modifier = Modifier.padding(start = 8.dp),
-                            isHighlighted = track.id == highlightedTrackId
+                            isHighlighted = track.id == highlightedTrackId,
+                            onAddToPlaylist = { onAddToPlaylist(track) },
+                            onShare = { onShare(track) },
+                            onTrackDetails = { onOpenTrackDetails(track) }
                         )
                     }
                 }
@@ -530,6 +553,23 @@ private fun sortTracks(tracks: List<AudioTrack>, sortOption: LibrarySortOption):
         LibrarySortOption.TRACK_NUMBER -> tracks.sortedBy { if (it.trackNumber == 0) Int.MAX_VALUE else it.trackNumber }
         LibrarySortOption.SHORTEST -> tracks.sortedBy { it.durationMs }
         LibrarySortOption.LONGEST -> tracks.sortedByDescending { it.durationMs }
+        // Album/artist-only options; a bare track list has no "track count" of its own.
+        LibrarySortOption.MOST_TRACKS, LibrarySortOption.LEAST_TRACKS ->
+            tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
+    }
+
+private fun sortAlbums(albums: List<AlbumSummary>, sortOption: LibrarySortOption): List<AlbumSummary> =
+    when (sortOption) {
+        LibrarySortOption.MOST_TRACKS -> albums.sortedByDescending { it.trackCount }
+        LibrarySortOption.LEAST_TRACKS -> albums.sortedBy { it.trackCount }
+        else -> albums.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+    }
+
+private fun sortArtists(artists: List<ArtistSummary>, sortOption: LibrarySortOption): List<ArtistSummary> =
+    when (sortOption) {
+        LibrarySortOption.MOST_TRACKS -> artists.sortedByDescending { it.trackCount }
+        LibrarySortOption.LEAST_TRACKS -> artists.sortedBy { it.trackCount }
+        else -> artists.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
     }
 
 private fun trackLabelsFor(tracks: List<AudioTrack>, sortOption: LibrarySortOption): List<String> =
@@ -568,6 +608,31 @@ private fun rememberTrackHighlight(
         coroutineScope.launch { listState.scrollToItem(index + indexOffset) }
     }
     return highlightedTrackId to onJump
+}
+
+/**
+ * Same jump-and-flash behaviour as [rememberTrackHighlight], for the Albums/Artists lists, which
+ * have no numeric id to key off -- their own display name (already unique enough to key the
+ * LazyColumn's items()) doubles as the highlight key here.
+ */
+@Composable
+private fun rememberNameHighlight(
+    names: List<String>,
+    listState: LazyListState
+): Pair<String?, (Int) -> Unit> {
+    val coroutineScope = rememberCoroutineScope()
+    var highlightedName by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(highlightedName) {
+        if (highlightedName != null) {
+            delay(900)
+            highlightedName = null
+        }
+    }
+    val onJump: (Int) -> Unit = { index ->
+        highlightedName = names.getOrNull(index)
+        coroutineScope.launch { listState.scrollToItem(index) }
+    }
+    return highlightedName to onJump
 }
 
 /** Hands the track's own file off to whatever the user picks from the system share sheet. */
@@ -836,7 +901,10 @@ private fun SimpleTrackList(
     emptyMessage: String,
     onTrackClick: (AudioTrack) -> Unit,
     onShufflePlay: (List<AudioTrack>) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onAddToPlaylist: (AudioTrack) -> Unit = {},
+    onShare: (AudioTrack) -> Unit = {},
+    onOpenTrackDetails: (AudioTrack) -> Unit = {}
 ) {
     if (tracks.isEmpty()) {
         Box(
@@ -871,13 +939,9 @@ private fun SimpleTrackList(
         }
 
         val listState = rememberLazyListState()
-        val canScroll by remember {
-            derivedStateOf { listState.layoutInfo.totalItemsCount > listState.layoutInfo.visibleItemsInfo.size }
-        }
         val isAtTop by remember {
             derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
         }
-        val (highlightedTrackId, onAlphabetJump) = rememberTrackHighlight(sortedTracks, listState)
 
         Column(modifier = modifier.fillMaxSize()) {
             AnimatedVisibility(visible = isAtTop) {
@@ -889,39 +953,32 @@ private fun SimpleTrackList(
                 )
             }
 
-            Box(modifier = Modifier.weight(1f)) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        bottom = 120.dp,
-                        top = 4.dp,
-                        end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(
-                        items = sortedTracks,
-                        key = { it.id }
-                    ) { track ->
-                        val isPlayingThis = currentTrack?.id == track.id
-                        TrackItem(
-                            track = track,
-                            isPlayingThisTrack = isPlayingThis,
-                            onClick = { onTrackClick(track) },
-                            modifier = Modifier.padding(start = 8.dp),
-                            isHighlighted = track.id == highlightedTrackId
-                        )
-                    }
-                }
-
-                if (canScroll) {
-                    AlphabetScrollbar(
-                        labels = remember(sortedTracks, sortOption) { trackLabelsFor(sortedTracks, sortOption) },
-                        onJump = onAlphabetJump,
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .fillMaxHeight()
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxSize(),
+                contentPadding = PaddingValues(
+                    bottom = 120.dp,
+                    top = 4.dp,
+                    end = 8.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(
+                    items = sortedTracks,
+                    key = { it.id }
+                ) { track ->
+                    val isPlayingThis = currentTrack?.id == track.id
+                    TrackItem(
+                        track = track,
+                        isPlayingThisTrack = isPlayingThis,
+                        onClick = { onTrackClick(track) },
+                        modifier = Modifier.padding(start = 8.dp),
+                        showDuration = true,
+                        onAddToPlaylist = { onAddToPlaylist(track) },
+                        onShare = { onShare(track) },
+                        onTrackDetails = { onOpenTrackDetails(track) }
                     )
                 }
             }
@@ -963,7 +1020,10 @@ fun DetailTrackList(
     onOpenTrackDetails: (AudioTrack) -> Unit = {},
     // Non-null only for album detail: pinned pencil icon (top right, alongside the back button)
     // opening the metadata editor for the whole album.
-    onEditMetadata: (() -> Unit)? = null
+    onEditMetadata: (() -> Unit)? = null,
+    // Non-null only for playlist detail: small draw icon on the hero artwork's own bottom-right
+    // corner, opening a picker to choose which track's art stands in for the playlist's own.
+    onEditPlaylistArtwork: (() -> Unit)? = null
 ) {
     var sortOption by remember { mutableStateOf(availableSortOptions.first()) }
     val sortedTracks = remember(tracks, sortOption, showToolbar) {
@@ -1093,6 +1153,27 @@ fun DetailTrackList(
                                         modifier = Modifier.fillMaxSize(),
                                         contentScale = ContentScale.Crop
                                     )
+                                }
+                                if (onEditPlaylistArtwork != null) {
+                                    Surface(
+                                        onClick = onEditPlaylistArtwork,
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(6.dp)
+                                            .size(32.dp),
+                                        shape = CircleShape,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        shadowElevation = 3.dp
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.Draw,
+                                                contentDescription = "Choose playlist artwork",
+                                                tint = MaterialTheme.colorScheme.onPrimary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                             Spacer(modifier = Modifier.height(12.dp))
@@ -1398,6 +1479,7 @@ fun DetailTrackList(
 private fun AlbumsList(
     albums: List<AlbumSummary>,
     onAlbumClick: (String) -> Unit,
+    onShuffleClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     if (albums.isEmpty()) {
@@ -1405,78 +1487,121 @@ private fun AlbumsList(
         return
     }
 
+    var sortOption by remember { mutableStateOf(LibrarySortOption.NAME) }
+    val sortedAlbums = remember(albums, sortOption) { sortAlbums(albums, sortOption) }
+
     val listState = rememberLazyListState()
     val canScroll by remember {
         derivedStateOf { listState.layoutInfo.totalItemsCount > listState.layoutInfo.visibleItemsInfo.size }
     }
+    val isAtTop by remember {
+        derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
+    }
+    val albumNames = remember(sortedAlbums) { sortedAlbums.map { it.name } }
+    val (highlightedAlbumName, onAlphabetJump) = rememberNameHighlight(albumNames, listState)
 
-    Box(modifier = modifier.fillMaxSize()) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                bottom = 120.dp,
-                top = 8.dp,
-                start = 8.dp,
-                end = if (canScroll) PRECISE_SCROLLBAR_WIDTH + PRECISE_SCROLLBAR_EDGE_INSET else 8.dp
-            ),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            items(albums, key = { it.name }) { album ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable { onAlbumClick(album.name) }
-                        .padding(start = 8.dp, top = 8.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
+    Column(modifier = modifier.fillMaxSize()) {
+        AnimatedVisibility(visible = isAtTop) {
+            LibraryToolbar(
+                sortOption = sortOption,
+                onSortOptionSelected = { sortOption = it },
+                onShuffleClick = onShuffleClick,
+                availableSortOptions = listOf(
+                    LibrarySortOption.NAME,
+                    LibrarySortOption.MOST_TRACKS,
+                    LibrarySortOption.LEAST_TRACKS
+                )
+            )
+        }
+
+        Box(modifier = Modifier.weight(1f)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    bottom = 120.dp,
+                    top = 8.dp,
+                    start = 8.dp,
+                    end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(sortedAlbums, key = { it.name }) { album ->
+                    val backgroundColor by animateColorAsState(
+                        targetValue = if (album.name == highlightedAlbumName) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                        } else {
+                            Color.Transparent
+                        },
+                        label = "album_bg"
+                    )
+                    Row(
                         modifier = Modifier
-                            .size(52.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(backgroundColor)
+                            .clickable { onAlbumClick(album.name) }
+                            .padding(start = 8.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Album, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
-                        if (album.artworkUri != null) {
-                            val context = LocalContext.current
-                            AsyncImage(
-                                model = remember(album.artworkUri) {
-                                    ImageRequest.Builder(context)
-                                        .data(album.artworkUri)
-                                        .size(Size(128, 128))
-                                        .build()
-                                },
+                        Box(
+                            modifier = Modifier
+                                .size(52.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Album,
                                 contentDescription = null,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
+                                tint = MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            if (album.artworkUri != null) {
+                                val context = LocalContext.current
+                                AsyncImage(
+                                    model = remember(album.artworkUri) {
+                                        ImageRequest.Builder(context)
+                                            .data(album.artworkUri)
+                                            .size(Size(128, 128))
+                                            .build()
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.size(14.dp))
+                        Column {
+                            Text(
+                                text = album.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${album.artist} • ${album.trackCount} songs",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.size(12.dp))
-                    Column {
-                        Text(album.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                        Text(
-                            text = "${album.artist} • ${album.trackCount} songs",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1
-                        )
-                    }
                 }
             }
-        }
 
-        if (canScroll) {
-            PreciseScrollbar(
-                itemCount = albums.size,
-                listState = listState,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .fillMaxHeight()
-                    .padding(end = PRECISE_SCROLLBAR_EDGE_INSET)
-            )
+            if (canScroll) {
+                AlphabetScrollbar(
+                    labels = albumNames,
+                    onJump = onAlphabetJump,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                )
+            }
         }
     }
 }
@@ -1494,9 +1619,7 @@ private fun ArtistsList(
     }
 
     var sortOption by remember { mutableStateOf(LibrarySortOption.NAME) }
-    val sortedArtists = remember(artists, sortOption) {
-        artists.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
-    }
+    val sortedArtists = remember(artists, sortOption) { sortArtists(artists, sortOption) }
 
     val listState = rememberLazyListState()
     val canScroll by remember {
@@ -1505,6 +1628,8 @@ private fun ArtistsList(
     val isAtTop by remember {
         derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
     }
+    val artistNames = remember(sortedArtists) { sortedArtists.map { it.name } }
+    val (highlightedArtistName, onAlphabetJump) = rememberNameHighlight(artistNames, listState)
 
     Column(modifier = modifier.fillMaxSize()) {
         AnimatedVisibility(visible = isAtTop) {
@@ -1512,7 +1637,11 @@ private fun ArtistsList(
                 sortOption = sortOption,
                 onSortOptionSelected = { sortOption = it },
                 onShuffleClick = onShuffleClick,
-                availableSortOptions = listOf(LibrarySortOption.NAME, LibrarySortOption.ARTIST)
+                availableSortOptions = listOf(
+                    LibrarySortOption.NAME,
+                    LibrarySortOption.MOST_TRACKS,
+                    LibrarySortOption.LEAST_TRACKS
+                )
             )
         }
 
@@ -1524,27 +1653,41 @@ private fun ArtistsList(
                     bottom = 120.dp,
                     top = 4.dp,
                     start = 8.dp,
-                    end = if (canScroll) PRECISE_SCROLLBAR_WIDTH + PRECISE_SCROLLBAR_EDGE_INSET else 8.dp
+                    end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
                 ),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 items(sortedArtists, key = { it.name }) { artist ->
+                    val backgroundColor by animateColorAsState(
+                        targetValue = if (artist.name == highlightedArtistName) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                        } else {
+                            Color.Transparent
+                        },
+                        label = "artist_bg"
+                    )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(14.dp))
+                            .background(backgroundColor)
                             .clickable { onArtistClick(artist.name) }
                             .padding(start = 8.dp, top = 10.dp, bottom = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(52.dp)
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.size(24.dp)
+                            )
                             if (artist.artworkUri != null) {
                                 val context = LocalContext.current
                                 AsyncImage(
@@ -1560,13 +1703,21 @@ private fun ArtistsList(
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.size(12.dp))
+                        Spacer(modifier = Modifier.size(14.dp))
                         Column {
-                            Text(artist.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            Text(
+                                text = artist.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                             Text(
                                 text = "${artist.trackCount} songs",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -1574,13 +1725,12 @@ private fun ArtistsList(
             }
 
             if (canScroll) {
-                PreciseScrollbar(
-                    itemCount = sortedArtists.size,
-                    listState = listState,
+                AlphabetScrollbar(
+                    labels = artistNames,
+                    onJump = onAlphabetJump,
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .fillMaxHeight()
-                        .padding(end = PRECISE_SCROLLBAR_EDGE_INSET)
                 )
             }
         }
@@ -1590,6 +1740,7 @@ private fun ArtistsList(
 @Composable
 private fun PlaylistsList(
     playlists: List<Playlist>,
+    allTracks: List<AudioTrack>,
     onPlaylistClick: (Playlist) -> Unit,
     recentlyAddedTrack: AudioTrack?,
     mostPlayedTrack: AudioTrack?,
@@ -1597,84 +1748,123 @@ private fun PlaylistsList(
     onCategoryClick: (SpotlightCategory) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier.fillMaxSize()) {
-        SpotlightRow(
-            recentlyAddedTrack = recentlyAddedTrack,
-            mostPlayedTrack = mostPlayedTrack,
-            recentlyPlayedTrack = recentlyPlayedTrack,
-            onCategoryClick = onCategoryClick,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 12.dp)
-        )
+    // Missing/deleted tracks are simply skipped -- a playlist's trackIds can outlive the files
+    // they point at.
+    val tracksById = remember(allTracks) { allTracks.associateBy { it.id } }
+    val sortedPlaylists = remember(playlists) {
+        playlists.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+    }
 
-        if (playlists.isEmpty()) {
-            EmptyLibrarySection(
-                icon = Icons.AutoMirrored.Filled.QueueMusic,
-                message = "No playlists yet.\nTap the + on Now Playing to create one.",
-                modifier = Modifier.weight(1f)
+    val listState = rememberLazyListState()
+    LazyColumn(
+        state = listState,
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 120.dp, top = 8.dp, start = 8.dp, end = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        item {
+            SpotlightRow(
+                recentlyAddedTrack = recentlyAddedTrack,
+                mostPlayedTrack = mostPlayedTrack,
+                recentlyPlayedTrack = recentlyPlayedTrack,
+                onCategoryClick = onCategoryClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 12.dp)
             )
-            return@Column
         }
 
-        val listState = rememberLazyListState()
-        val canScroll by remember {
-            derivedStateOf { listState.layoutInfo.totalItemsCount > listState.layoutInfo.visibleItemsInfo.size }
-        }
-        Box(modifier = Modifier.weight(1f)) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    bottom = 120.dp,
-                    top = 8.dp,
-                    start = 8.dp,
-                    end = if (canScroll) PRECISE_SCROLLBAR_WIDTH + PRECISE_SCROLLBAR_EDGE_INSET else 8.dp
-                ),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(playlists, key = { it.id }) { playlist ->
+        if (sortedPlaylists.isEmpty()) {
+            item {
+                EmptyLibrarySection(
+                    icon = Icons.AutoMirrored.Filled.QueueMusic,
+                    message = "No playlists yet.\nTap the + on Now Playing to create one.",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 32.dp)
+                )
+            }
+        } else {
+                items(sortedPlaylists, key = { it.id }) { playlist ->
+                    val playlistTracks = remember(playlist.trackIds, tracksById) {
+                        playlist.trackIds.mapNotNull { tracksById[it] }
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(14.dp))
                             .clickable { onPlaylistClick(playlist) }
-                            .padding(start = 8.dp, top = 10.dp, bottom = 10.dp),
+                            .padding(start = 8.dp, top = 10.dp, bottom = 10.dp, end = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(52.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            val firstTrackArtworkUri = playlistTracks.firstOrNull()?.artworkUri
+                            if (firstTrackArtworkUri != null) {
+                                val context = LocalContext.current
+                                AsyncImage(
+                                    model = remember(firstTrackArtworkUri) {
+                                        ImageRequest.Builder(context)
+                                            .data(firstTrackArtworkUri)
+                                            .size(Size(128, 128))
+                                            .build()
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
                         }
-                        Spacer(modifier = Modifier.size(12.dp))
-                        Column {
-                            Text(playlist.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Spacer(modifier = Modifier.size(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = playlist.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                             Text(
                                 text = "${playlist.trackIds.size} songs",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
+                        Spacer(modifier = Modifier.size(8.dp))
+                        Text(
+                            text = formatTotalDuration(playlistTracks.sumOf { it.durationMs }),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
-
-            if (canScroll) {
-                PreciseScrollbar(
-                    itemCount = playlists.size,
-                    listState = listState,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxHeight()
-                        .padding(end = PRECISE_SCROLLBAR_EDGE_INSET)
-                )
-            }
         }
+    }
+
+/** e.g. 3661000ms -> "1:01:01"; under an hour -> "12:34". */
+private fun formatTotalDuration(totalMs: Long): String {
+    val totalSeconds = totalMs / 1000
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(Locale.US, "%02d:%02d", minutes, seconds)
     }
 }
 

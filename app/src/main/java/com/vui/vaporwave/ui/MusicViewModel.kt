@@ -167,6 +167,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _playlistPickerTarget = MutableStateFlow<AudioTrack?>(null)
     val playlistPickerTarget: StateFlow<AudioTrack?> = _playlistPickerTarget.asStateFlow()
 
+    /** Id of the playlist whose "choose artwork" track picker is currently open, if any. */
+    private val _artworkPickerPlaylistId = MutableStateFlow<Long?>(null)
+    val artworkPickerPlaylistId: StateFlow<Long?> = _artworkPickerPlaylistId.asStateFlow()
+
     private val _trackDetailsTarget = MutableStateFlow<AudioTrack?>(null)
     val trackDetailsTarget: StateFlow<AudioTrack?> = _trackDetailsTarget.asStateFlow()
 
@@ -752,6 +756,23 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _playlists.value = updated
         viewModelScope.launch { repository.savePlaylists(updated) }
         _playlistPickerTarget.value = null
+    }
+
+    fun openArtworkPicker(playlistId: Long) {
+        _artworkPickerPlaylistId.value = playlistId
+    }
+
+    fun dismissArtworkPicker() {
+        _artworkPickerPlaylistId.value = null
+    }
+
+    fun setPlaylistArtwork(playlistId: Long, trackId: Long) {
+        val updated = _playlists.value.map { playlist ->
+            if (playlist.id == playlistId) playlist.copy(artworkTrackId = trackId) else playlist
+        }
+        _playlists.value = updated
+        viewModelScope.launch { repository.savePlaylists(updated) }
+        _artworkPickerPlaylistId.value = null
     }
 
     override fun onCleared() {

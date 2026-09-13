@@ -13,15 +13,24 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,8 +58,15 @@ fun TrackItem(
     trackNumber: Int? = null,
     /** Briefly true to flash this row -- e.g. an alphabet-scrollbar jump on a list too short to
      *  actually scroll to it. Caller is responsible for clearing it back to false after a beat. */
-    isHighlighted: Boolean = false
+    isHighlighted: Boolean = false,
+    /** Shows the track's formatted duration just before the overflow menu (e.g. Favourites). */
+    showDuration: Boolean = false,
+    /** Null hides the trailing overflow menu entirely (e.g. rows that don't support it yet). */
+    onAddToPlaylist: (() -> Unit)? = null,
+    onShare: (() -> Unit)? = null,
+    onTrackDetails: (() -> Unit)? = null
 ) {
+    var isMenuExpanded by remember { mutableStateOf(false) }
     val backgroundColor by animateColorAsState(
         targetValue = when {
             isHighlighted -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
@@ -70,7 +86,7 @@ fun TrackItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Album Artwork thumbnail or decorative aesthetic fallback -- skipped entirely inside
@@ -158,6 +174,53 @@ fun TrackItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+
+            if (showDuration) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = track.formattedDuration,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (onAddToPlaylist != null || onShare != null || onTrackDetails != null) {
+                Box {
+                    IconButton(onClick = { isMenuExpanded = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Track options",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = isMenuExpanded,
+                        onDismissRequest = { isMenuExpanded = false }
+                    ) {
+                        if (onAddToPlaylist != null) {
+                            DropdownMenuItem(
+                                text = { Text("Add to Playlist") },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null) },
+                                onClick = { isMenuExpanded = false; onAddToPlaylist() }
+                            )
+                        }
+                        if (onShare != null) {
+                            DropdownMenuItem(
+                                text = { Text("Share") },
+                                leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
+                                onClick = { isMenuExpanded = false; onShare() }
+                            )
+                        }
+                        if (onTrackDetails != null) {
+                            DropdownMenuItem(
+                                text = { Text("Track Details") },
+                                leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
+                                onClick = { isMenuExpanded = false; onTrackDetails() }
+                            )
+                        }
+                    }
+                }
             }
         }
     }

@@ -357,7 +357,10 @@ class MusicRepository(private val context: Context) {
                 val obj = array.getJSONObject(i)
                 val idsArray = obj.getJSONArray("trackIds")
                 val trackIds = (0 until idsArray.length()).map { idsArray.getLong(it) }
-                Playlist(id = obj.getLong("id"), name = obj.getString("name"), trackIds = trackIds)
+                // optLong defaults to -1 rather than 0 (a value that could collide with a real
+                // track id) when reading a playlist saved before this field existed.
+                val artworkTrackId = obj.optLong("artworkTrackId", -1L).takeIf { it != -1L }
+                Playlist(id = obj.getLong("id"), name = obj.getString("name"), trackIds = trackIds, artworkTrackId = artworkTrackId)
             }
         } catch (e: Exception) {
             emptyList()
@@ -373,6 +376,9 @@ class MusicRepository(private val context: Context) {
             val idsArray = JSONArray()
             playlist.trackIds.forEach { idsArray.put(it) }
             obj.put("trackIds", idsArray)
+            if (playlist.artworkTrackId != null) {
+                obj.put("artworkTrackId", playlist.artworkTrackId)
+            }
             array.put(obj)
         }
         prefs.edit().putString(KEY_PLAYLISTS, array.toString()).apply()
