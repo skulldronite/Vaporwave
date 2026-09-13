@@ -639,12 +639,20 @@ class MainActivity : ComponentActivity() {
                         // SizeTransform (clipping, spring-animated) -- every level here is a
                         // full-screen page, so there is never a size difference worth animating,
                         // and any that did appear would show up as a clipped zoom.
+                        //
+                        // The slide itself is an explicit tween, not slideInVertically/
+                        // slideOutVertically's own default (spring-based) animationSpec -- a
+                        // spring settling into its target isn't perfectly critically damped, so it
+                        // was overshooting by a pixel or two right at the end and correcting back,
+                        // a barely-visible "judder" as a pushed screen finished sliding into place.
+                        // tween is a monotonic interpolation with no overshoot by construction.
+                        val slideSpec = tween<IntOffset>(durationMillis = 300, easing = FastOutSlowInEasing)
                         if (targetState.size > initialState.size) {
-                            (slideInVertically(initialOffsetY = { it }) + fadeIn()) togetherWith
+                            (slideInVertically(animationSpec = slideSpec, initialOffsetY = { it }) + fadeIn()) togetherWith
                                 fadeOut() using null
                         } else {
                             fadeIn() togetherWith
-                                (slideOutVertically(targetOffsetY = { it }) + fadeOut()) using null
+                                (slideOutVertically(animationSpec = slideSpec, targetOffsetY = { it }) + fadeOut()) using null
                         }
                     },
                     label = "libraryDetailStack"
