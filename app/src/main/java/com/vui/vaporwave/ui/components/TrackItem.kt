@@ -44,13 +44,18 @@ fun TrackItem(
     isPlayingThisTrack: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    showArtwork: Boolean = true
+    showArtwork: Boolean = true,
+    /** Shown in artwork's place (from the file's own metadata) when [showArtwork] is false. */
+    trackNumber: Int? = null,
+    /** Briefly true to flash this row -- e.g. an alphabet-scrollbar jump on a list too short to
+     *  actually scroll to it. Caller is responsible for clearing it back to false after a beat. */
+    isHighlighted: Boolean = false
 ) {
     val backgroundColor by animateColorAsState(
-        targetValue = if (isPlayingThisTrack) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
-        } else {
-            MaterialTheme.colorScheme.surface
+        targetValue = when {
+            isHighlighted -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+            isPlayingThisTrack -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+            else -> MaterialTheme.colorScheme.surface
         },
         label = "track_bg"
     )
@@ -118,6 +123,21 @@ fun TrackItem(
                     }
                 }
 
+                Spacer(modifier = Modifier.width(14.dp))
+            } else if (trackNumber != null && trackNumber > 0) {
+                // No artwork here (already shown once in the hero above the list) -- the freed
+                // slot instead carries this track's position from its own file metadata.
+                Box(
+                    modifier = Modifier.size(width = 28.dp, height = 52.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = trackNumber.toString(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (isPlayingThisTrack) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isPlayingThisTrack) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Spacer(modifier = Modifier.width(14.dp))
             }
 

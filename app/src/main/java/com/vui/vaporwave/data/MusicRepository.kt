@@ -36,7 +36,8 @@ class MusicRepository(private val context: Context) {
             MediaStore.Audio.Media.ALBUM_ID,
             MediaStore.Audio.Media.MIME_TYPE,
             MediaStore.Audio.Media.SIZE,
-            MediaStore.Audio.Media.DATE_ADDED
+            MediaStore.Audio.Media.DATE_ADDED,
+            MediaStore.Audio.Media.TRACK
         )
 
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.DURATION} >= 5000"
@@ -61,6 +62,7 @@ class MusicRepository(private val context: Context) {
                 val mimeCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.MIME_TYPE)
                 val sizeCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE)
                 val dateAddedCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
+                val trackCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.TRACK)
 
                 while (it.moveToNext()) {
                     val id = it.getLong(idCol)
@@ -73,6 +75,9 @@ class MusicRepository(private val context: Context) {
                     val size = it.getLong(sizeCol)
                     // DATE_ADDED is stored in seconds since epoch; normalize to milliseconds.
                     val dateAddedMs = it.getLong(dateAddedCol) * 1000L
+                    // MediaStore packs disc number into the thousands place (e.g. disc 2 track 3
+                    // is stored as 2003), so isolate the actual track number with % 1000.
+                    val trackNumber = it.getInt(trackCol) % 1000
 
                     val contentUri = ContentUris.withAppendedId(
                         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
@@ -106,7 +111,8 @@ class MusicRepository(private val context: Context) {
                             mimeType = mimeType,
                             sizeBytes = size,
                             isDemoTrack = false,
-                            dateAddedMs = dateAddedMs
+                            dateAddedMs = dateAddedMs,
+                            trackNumber = trackNumber
                         )
                     )
                 }
@@ -130,6 +136,7 @@ class MusicRepository(private val context: Context) {
         var mimeType: String? = null
         var sampleRate: Int = 44100
         var bitrate: Int = 0
+        var trackNumber = 0
         var resolvedOk = false
 
         try {
@@ -144,6 +151,10 @@ class MusicRepository(private val context: Context) {
             sampleRate = srStr?.toIntOrNull() ?: 44100
             val brStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
             bitrate = (brStr?.toIntOrNull() ?: 0) / 1000
+            // Tag value is often "track/total" (e.g. "3/12"); only the part before the slash is
+            // the actual track number.
+            val trackStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
+            trackNumber = trackStr?.substringBefore('/')?.toIntOrNull() ?: 0
             resolvedOk = true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -172,7 +183,8 @@ class MusicRepository(private val context: Context) {
             mimeType = mimeType ?: context.contentResolver.getType(uri) ?: "audio/*",
             sampleRateHz = sampleRate,
             bitrateKbps = bitrate,
-            isDemoTrack = false
+            isDemoTrack = false,
+            trackNumber = trackNumber
         )
     }
 
