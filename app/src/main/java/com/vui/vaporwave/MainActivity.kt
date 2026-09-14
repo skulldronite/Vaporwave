@@ -736,7 +736,11 @@ class MainActivity : ComponentActivity() {
                                             // Every row would otherwise repeat the same artwork
                                             // already shown in the hero image above the list.
                                             showTrackArtwork = false,
+                                            // NAME first so it's the default (DetailTrackList
+                                            // starts on availableSortOptions.first()) -- alphabetical
+                                            // is the expected default order for an album's tracks.
                                             availableSortOptions = listOf(
+                                                LibrarySortOption.NAME,
                                                 LibrarySortOption.SHORTEST,
                                                 LibrarySortOption.LONGEST
                                             ),

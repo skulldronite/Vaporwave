@@ -559,6 +559,29 @@ private fun sortTracks(tracks: List<AudioTrack>, sortOption: LibrarySortOption):
             tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
     }
 
+/**
+ * The number to show on each track's left edge in [DiscTrackRow]'s disc-grouped layouts (album
+ * detail, and artist detail's Tracks view): a track's own trackNumber tag where present, or a
+ * sequential fallback where it's missing (0) -- so a row is never left blank just because the
+ * file wasn't tagged. Computed once from [tracks] in its own name-sorted order and grouped by
+ * disc (never from whatever sort the caller currently has applied), so a track's displayed number
+ * stays fixed no matter how the visible list is currently sorted -- re-sorting shortest-to-longest
+ * moves a track's row, not its number. [tracks] should already be scoped to one album's tracks;
+ * for an artist's tracks (spanning several albums, each with its own "disc 1"), call this per
+ * album and merge the resulting maps, not on the flattened list.
+ */
+internal fun stableTrackNumbers(tracks: List<AudioTrack>): Map<Long, Int> {
+    val numbers = mutableMapOf<Long, Int>()
+    tracks.groupBy { it.discNumber }.forEach { (_, discTracks) ->
+        val canonicalOrder = discTracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
+        var nextFallback = 1
+        canonicalOrder.forEach { track ->
+            numbers[track.id] = if (track.trackNumber > 0) track.trackNumber else nextFallback++
+        }
+    }
+    return numbers
+}
+
 private fun sortAlbums(albums: List<AlbumSummary>, sortOption: LibrarySortOption): List<AlbumSummary> =
     when (sortOption) {
         LibrarySortOption.MOST_TRACKS -> albums.sortedByDescending { it.trackCount }
@@ -661,9 +684,9 @@ fun DiscTrackRow(
     onShare: () -> Unit,
     onTrackDetails: () -> Unit,
     modifier: Modifier = Modifier,
-    // Album detail shows the track number here; artist detail's Tracks view (which groups by
-    // album already, so a track number would be redundant/less useful) shows the disc number
-    // instead -- this is just which of the two the caller wants blank-if-zero in that slot.
+    // A stable display number -- see [stableTrackNumbers]. Both callers (album detail and
+    // artist detail's Tracks view) pass one in explicitly rather than relying on this default,
+    // so that an untagged track still gets a number instead of leaving this blank.
     leadingNumber: Int = track.trackNumber
 ) {
     val backgroundColor by animateColorAsState(
@@ -1037,6 +1060,8 @@ fun DetailTrackList(
     val sortedTracks = remember(tracks, sortOption, showToolbar) {
         if (showToolbar) sortTracks(tracks, sortOption) else tracks
     }
+    // Computed from the raw (unsorted) tracks, not sortedTracks -- see [stableTrackNumbers]'s doc.
+    val trackNumbers = remember(tracks) { stableTrackNumbers(tracks) }
 
     val listState = rememberLazyListState()
     val isAtTop by remember {
@@ -1253,6 +1278,7 @@ fun DetailTrackList(
                                     onAddToPlaylist = { onAddToPlaylist(track) },
                                     onShare = { shareTrack(context, track) },
                                     onTrackDetails = { onOpenTrackDetails(track) },
+                                    leadingNumber = trackNumbers[track.id] ?: track.trackNumber,
                                     modifier = Modifier.padding(horizontal = 8.dp)
                                 )
                             }
