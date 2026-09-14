@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -88,6 +89,7 @@ import com.vui.vaporwave.ui.SpotlightCategory
 import com.vui.vaporwave.ui.components.MiniPlayer
 import com.vui.vaporwave.ui.components.NowPlayingSheet
 import com.vui.vaporwave.ui.components.PlaylistPickerDialog
+import com.vui.vaporwave.ui.components.ReachabilityPullBox
 import com.vui.vaporwave.ui.components.TrackArtworkPickerDialog
 import com.vui.vaporwave.ui.components.VaporwaveTopBar
 import com.vui.vaporwave.ui.screens.ArtistDetailScreen
@@ -180,6 +182,7 @@ class MainActivity : ComponentActivity() {
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent?.action == Intent.ACTION_VIEW) {
             intent.data?.let { uri ->
+                takePersistableReadPermission(uri)
                 viewModel.openAndPlayUri(uri)
             }
         }
@@ -188,6 +191,20 @@ class MainActivity : ComponentActivity() {
     private var openDocumentCallback: (() -> Unit)? = null
     private fun openDocumentPicker() {
         openDocumentCallback?.invoke()
+    }
+
+    // Without this, a picked/opened file's read access dies with the app process -- fine for
+    // playing it right now, but "Recently Opened Audio" (Files page) needs to be able to re-open
+    // the same uri in a future session too. Wrapped: not every provider (and not every
+    // ACTION_VIEW-supplied uri) supports a persistable grant, and this must never block actually
+    // opening/playing the file just because the grant couldn't be persisted.
+    private fun takePersistableReadPermission(uri: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (e: SecurityException) {
+            // Not persistable -- the file still opens and plays now, it just may not be
+            // re-openable from Recently Opened Audio after this process dies.
+        }
     }
 
     @Composable
@@ -209,7 +226,10 @@ class MainActivity : ComponentActivity() {
         val filePickerLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.OpenDocument()
         ) { uri: Uri? ->
-            uri?.let { viewModel.openAndPlayUri(it) }
+            uri?.let {
+                takePersistableReadPermission(it)
+                viewModel.openAndPlayUri(it)
+            }
         }
 
         LaunchedEffect(Unit) {
@@ -268,6 +288,7 @@ class MainActivity : ComponentActivity() {
         val recentlyAddedTracks by viewModel.recentlyAddedTracks.collectAsStateWithLifecycle()
         val mostPlayedTracks by viewModel.mostPlayedTracks.collectAsStateWithLifecycle()
         val recentlyPlayedTracks by viewModel.recentlyPlayedTracks.collectAsStateWithLifecycle()
+        val recentlyOpenedFiles by viewModel.recentlyOpenedFiles.collectAsStateWithLifecycle()
 
         val progressProvider: () -> Float = remember(duration) {
             {
@@ -497,64 +518,132 @@ class MainActivity : ComponentActivity() {
                     // to fit -- an extra bottom padding here would double that shrink.
                     .padding(innerPadding)
             ) {
-                when (destination) {
-                    AppDestination.LIBRARY -> {
-                        LibraryScreen(
-                            tracks = tracks,
-                            allTracks = allTracks,
-                            currentTrack = currentTrack,
-                            searchQuery = searchQuery,
-                            favouriteTracks = favouriteTracks,
-                            albums = albums,
-                            artists = artists,
-                            playlists = playlists,
-                            recentlyAddedTracks = recentlyAddedTracks,
-                            mostPlayedTracks = mostPlayedTracks,
-                            recentlyPlayedTracks = recentlyPlayedTracks,
-                            currentTab = currentLibraryTab,
-                            onTabChanged = { viewModel.setCurrentLibraryTab(it) },
-                            onSwipeDetected = { viewModel.dismissSwipeHint() },
-                            onTrackClick = { track, context -> viewModel.playTrack(track, context) },
-                            onOpenFileClick = onPickAudioFile,
-                            onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
-                            onOpenAlbum = { name -> viewModel.openLibraryDetail(LibraryDetail.Album(name)) },
-                            onOpenArtist = { name -> viewModel.openLibraryDetail(LibraryDetail.Artist(name)) },
-                            onOpenPlaylist = { id -> viewModel.openLibraryDetail(LibraryDetail.PlaylistDetail(id)) },
-                            onOpenSpotlight = { category -> viewModel.openLibraryDetail(LibraryDetail.Spotlight(category)) },
-                            onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
-                            onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
-                            onPullProgressChanged = { pullProgressState.floatValue = it },
-                            // Now Playing must be included here too: without it, this screen's
-                            // own no-op edge-swipe guard (see LibraryScreen's BackHandler) stays
-                            // enabled while Now Playing is expanded over the Tracks tab, and
-                            // since it registers after (so takes priority over) the BackHandler
-                            // above that actually collapses Now Playing, back swipes were being
-                            // silently swallowed instead of putting the mini player back down.
-                            isOverlayOpen = isSearchOpen || libraryDetailStack.isNotEmpty() || isNowPlayingExpanded ||
-                                trackDetailsTarget != null || metadataEditTarget != null
-                        )
-                    }
-                    AppDestination.FILES -> {
-                        FilesScreen(
-                            onOpenFilePicker = onPickAudioFile
-                        )
-                    }
-                    AppDestination.EFFECTS -> {
-                        EffectsScreen(
-                            currentSpeed = playbackSpeed,
-                            currentPitch = playbackPitch,
-                            isSlowedAndReverb = isSlowedAndReverb,
-                            onSetSpeedAndPitch = { speed, pitch -> viewModel.setSpeedAndPitch(speed, pitch) }
-                        )
-                    }
-                    AppDestination.SETTINGS -> {
-                        SettingsScreen(
-                            useVaporwaveTheme = useVaporwaveTheme,
-                            onToggleTheme = { viewModel.setUseVaporwaveTheme(it) },
-                            useDarkTheme = useDarkTheme,
-                            onToggleDarkTheme = { viewModel.setUseDarkTheme(it) },
-                            onRescanLibrary = { viewModel.loadTracks(force = true) }
-                        )
+                // Pre-warms Files/FX Studio/Settings once, immediately, off-screen -- without
+                // this, the very first switch to whichever of them the user visits first pays
+                // that screen's own cold-compose cost (vector icon inflation, `remember`-computed
+                // layout, etc.) during the same frames as the crossfade below, which was enough
+                // frame-time competition to make the fade skip straight to its end instead of
+                // animating -- exactly the class of hitch LibraryScreen's own
+                // beyondViewportPageCount already avoids for its five tabs, applied one level up
+                // here. Every destination switch after this warm-up composition reuses an
+                // already-warm composition and animates cleanly. Zero-sized (not zero-alpha):
+                // constraining to 0dp means these can never receive touch input, so the no-op
+                // callbacks below are always genuinely unreachable, not merely unlikely to fire.
+                Box(modifier = Modifier.size(0.dp)) {
+                    FilesScreen(onOpenFilePicker = {})
+                    EffectsScreen(
+                        currentSpeed = playbackSpeed,
+                        currentPitch = playbackPitch,
+                        isSlowedAndReverb = isSlowedAndReverb,
+                        onSetSpeedAndPitch = { _, _ -> }
+                    )
+                    SettingsScreen(
+                        useVaporwaveTheme = useVaporwaveTheme,
+                        onToggleTheme = {},
+                        useDarkTheme = useDarkTheme,
+                        onToggleDarkTheme = {},
+                        onRescanLibrary = {}
+                    )
+                }
+
+                // A fade-through crossfade rather than the plain instant swap this used to be --
+                // switching between Library/Files/FX Studio/Settings had no transition at all.
+                // `using null` (as with the library-detail-stack transition above) skips
+                // AnimatedContent's default clipping SizeTransform: these destinations are wildly
+                // different sizes/shapes from one another, and that default would clip/zoom
+                // across the difference instead of a clean crossfade.
+                AnimatedContent(
+                    targetState = destination,
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(220, delayMillis = 90)) togetherWith
+                            fadeOut(animationSpec = tween(90)) using null
+                    },
+                    label = "destination"
+                ) { targetDestination ->
+                    when (targetDestination) {
+                        AppDestination.LIBRARY -> {
+                            LibraryScreen(
+                                tracks = tracks,
+                                allTracks = allTracks,
+                                currentTrack = currentTrack,
+                                searchQuery = searchQuery,
+                                favouriteTracks = favouriteTracks,
+                                albums = albums,
+                                artists = artists,
+                                playlists = playlists,
+                                recentlyAddedTracks = recentlyAddedTracks,
+                                mostPlayedTracks = mostPlayedTracks,
+                                recentlyPlayedTracks = recentlyPlayedTracks,
+                                currentTab = currentLibraryTab,
+                                onTabChanged = { viewModel.setCurrentLibraryTab(it) },
+                                onSwipeDetected = { viewModel.dismissSwipeHint() },
+                                onTrackClick = { track, context -> viewModel.playTrack(track, context) },
+                                onOpenFileClick = onPickAudioFile,
+                                onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
+                                onOpenAlbum = { name -> viewModel.openLibraryDetail(LibraryDetail.Album(name)) },
+                                onOpenArtist = { name -> viewModel.openLibraryDetail(LibraryDetail.Artist(name)) },
+                                onOpenPlaylist = { id -> viewModel.openLibraryDetail(LibraryDetail.PlaylistDetail(id)) },
+                                onOpenSpotlight = { category -> viewModel.openLibraryDetail(LibraryDetail.Spotlight(category)) },
+                                onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
+                                onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
+                                reachabilityPullProgress = pullProgressState.floatValue,
+                                onPullProgressChanged = { pullProgressState.floatValue = it },
+                                // Now Playing must be included here too: without it, this screen's
+                                // own no-op edge-swipe guard (see LibraryScreen's BackHandler) stays
+                                // enabled while Now Playing is expanded over the Tracks tab, and
+                                // since it registers after (so takes priority over) the BackHandler
+                                // above that actually collapses Now Playing, back swipes were being
+                                // silently swallowed instead of putting the mini player back down.
+                                isOverlayOpen = isSearchOpen || libraryDetailStack.isNotEmpty() || isNowPlayingExpanded ||
+                                    trackDetailsTarget != null || metadataEditTarget != null
+                            )
+                        }
+                        AppDestination.FILES -> {
+                            // LibraryScreen has always driven the one-handed pull gesture itself;
+                            // Files/FX Studio/Settings below get the exact same gesture from the
+                            // same shared component instead of missing it entirely.
+                            ReachabilityPullBox(
+                                pullProgress = pullProgressState.floatValue,
+                                onPullProgressChanged = { pullProgressState.floatValue = it },
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                FilesScreen(
+                                    onOpenFilePicker = onPickAudioFile,
+                                    recentlyOpenedFiles = recentlyOpenedFiles,
+                                    onOpenRecentFile = { uri -> viewModel.openAndPlayUri(uri) },
+                                    onRemoveRecentFile = { uri -> viewModel.removeRecentlyOpenedFile(uri) }
+                                )
+                            }
+                        }
+                        AppDestination.EFFECTS -> {
+                            ReachabilityPullBox(
+                                pullProgress = pullProgressState.floatValue,
+                                onPullProgressChanged = { pullProgressState.floatValue = it },
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                EffectsScreen(
+                                    currentSpeed = playbackSpeed,
+                                    currentPitch = playbackPitch,
+                                    isSlowedAndReverb = isSlowedAndReverb,
+                                    onSetSpeedAndPitch = { speed, pitch -> viewModel.setSpeedAndPitch(speed, pitch) }
+                                )
+                            }
+                        }
+                        AppDestination.SETTINGS -> {
+                            ReachabilityPullBox(
+                                pullProgress = pullProgressState.floatValue,
+                                onPullProgressChanged = { pullProgressState.floatValue = it },
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                SettingsScreen(
+                                    useVaporwaveTheme = useVaporwaveTheme,
+                                    onToggleTheme = { viewModel.setUseVaporwaveTheme(it) },
+                                    useDarkTheme = useDarkTheme,
+                                    onToggleDarkTheme = { viewModel.setUseDarkTheme(it) },
+                                    onRescanLibrary = { viewModel.loadTracks(force = true) }
+                                )
+                            }
+                        }
                     }
                 }
             }

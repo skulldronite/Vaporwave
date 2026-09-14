@@ -5,6 +5,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -70,6 +71,16 @@ fun VaporwaveTopBar(
     pullProgress: Float = 0f
 ) {
     var isMenuExpanded by remember { mutableStateOf(false) }
+
+    // Ever-incrementing rather than toggled 0/360 -- animateFloatAsState always takes the
+    // shortest path to its target, so toggling back to 0 after a full turn would spin the icon
+    // back counter-clockwise instead of continuing to turn the same way on every tap.
+    var settingsRotationTarget by remember { mutableStateOf(0f) }
+    val settingsRotation by animateFloatAsState(
+        targetValue = settingsRotationTarget,
+        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
+        label = "settingsIconRotation"
+    )
 
     // Gap above the title (status bar to title). Independent of titleToDotsGap below --
     // they were briefly a single shared value so the two matched exactly, but tuning one by
@@ -182,8 +193,17 @@ fun VaporwaveTopBar(
             }
 
             Box(modifier = Modifier.align(Alignment.Top)) {
-                IconButton(onClick = { isMenuExpanded = true }) {
-                    Icon(imageVector = Icons.Default.Settings, contentDescription = "Menu")
+                IconButton(
+                    onClick = {
+                        isMenuExpanded = true
+                        settingsRotationTarget += 360f
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Menu",
+                        modifier = Modifier.graphicsLayer { rotationZ = settingsRotation }
+                    )
                 }
 
                 DropdownMenu(

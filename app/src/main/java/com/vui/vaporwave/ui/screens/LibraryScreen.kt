@@ -8,7 +8,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -78,7 +77,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,13 +86,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.input.pointer.PointerEvent
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -106,7 +98,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
@@ -118,6 +109,7 @@ import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.model.Playlist
 import com.vui.vaporwave.ui.LibraryTab
 import com.vui.vaporwave.ui.SpotlightCategory
+import com.vui.vaporwave.ui.components.ReachabilityPullBox
 import com.vui.vaporwave.ui.components.TrackItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -169,96 +161,16 @@ fun LibraryScreen(
     onAddToPlaylist: (AudioTrack) -> Unit = {},
     onOpenTrackDetails: (AudioTrack) -> Unit = {},
     modifier: Modifier = Modifier,
+    // Hoisted (controlled), not owned here -- see ReachabilityPullBox's doc for why. Read by
+    // every tab's own ReachabilityPullBox below, so a pull triggered on one tab (or before
+    // switching away to another top-level destination entirely) is still reflected once you
+    // return, instead of each tab/destination silently starting over from zero.
+    reachabilityPullProgress: Float = 0f,
     onPullProgressChanged: (Float) -> Unit = {},
     isOverlayOpen: Boolean = false
 ) {
     val tabs = remember { LibraryTab.entries.toList() }
     val pagerState = rememberPagerState(initialPage = tabs.indexOf(currentTab)) { tabs.size }
-
-    // Reachability gesture: once a list is scrolled to the top, pulling further down doesn't
-    // bounce the list -- it reports progress upward so the UI can shift down/enlarge the title
-    // for easier one-handed reach. A single connection here covers every list in every tab,
-    // since nested scroll deltas bubble up through this composable regardless of which
-    // LazyColumn is currently active inside the pager.
-    val reachabilityMaxPullPx = with(LocalDensity.current) { 96.dp.toPx() }
-    var reachabilityPullPx by remember { mutableFloatStateOf(0f) }
-    // True only while the pull is open AND the two-finger gesture is what opened (or most
-    // recently re-affirmed) it. Gates the single-finger swipe-up-to-close behaviour below: once
-    // set, an ordinary one-finger scroll no longer retracts the pull, so it can only be
-    // dismissed by the same two-finger gesture that opened it.
-    var pullOpenedByTwoFingerGesture by remember { mutableStateOf(false) }
-    // The connection below is remembered once, so it would otherwise capture the very first
-    // onPullProgressChanged lambda forever and keep calling a stale one after recomposition.
-    val currentOnPullProgressChanged by rememberUpdatedState(onPullProgressChanged)
-
-    // Shared by both ways of ending a pull gesture (single-finger fling at the top, and the
-    // two-finger drag below): snap open once pulled past 30% of the max, otherwise spring back.
-    suspend fun settleReachabilityPull(viaTwoFinger: Boolean = false) {
-        if (reachabilityPullPx > 0f) {
-            val target = if (reachabilityPullPx > reachabilityMaxPullPx * 0.3f) {
-                reachabilityMaxPullPx
-            } else {
-                0f
-            }
-            animate(initialValue = reachabilityPullPx, targetValue = target) { value, _ ->
-                reachabilityPullPx = value
-                currentOnPullProgressChanged(reachabilityPullPx / reachabilityMaxPullPx)
-            }
-            // Ending closed always clears the flag; ending open records whichever gesture just
-            // settled it there.
-            pullOpenedByTwoFingerGesture = viaTwoFinger && target == reachabilityMaxPullPx
-        }
-    }
-
-    val reachabilityConnection = remember {
-        object : NestedScrollConnection {
-            // Scrolling further up (away from the top) retracts an open pull first, before the
-            // list itself scrolls -- this is the only way to dismiss reachability mode, unless
-            // it was opened by the two-finger gesture, in which case a plain one-finger scroll
-            // must not be able to close it (only another two-finger drag can).
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (source != NestedScrollSource.UserInput) return Offset.Zero
-                // Never touch the pull while a horizontal page swipe is in progress -- doing so
-                // was fighting the pager's own gesture handling and breaking its transitions.
-                if (pagerState.isScrollInProgress) return Offset.Zero
-                if (pullOpenedByTwoFingerGesture) return Offset.Zero
-                if (reachabilityPullPx <= 0f || available.y >= 0f) return Offset.Zero
-                val newPull = (reachabilityPullPx + available.y).coerceAtLeast(0f)
-                val delta = newPull - reachabilityPullPx
-                reachabilityPullPx = newPull
-                currentOnPullProgressChanged(reachabilityPullPx / reachabilityMaxPullPx)
-                return Offset(0f, delta)
-            }
-
-            // Once the list can't consume any more downward drag (already at the top), extend
-            // the pull instead of letting the list bounce.
-            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                if (source != NestedScrollSource.UserInput) return Offset.Zero
-                if (pagerState.isScrollInProgress) return Offset.Zero
-                if (available.y <= 0f) return Offset.Zero
-                val newPull = (reachabilityPullPx + available.y).coerceAtMost(reachabilityMaxPullPx)
-                if (newPull == reachabilityPullPx) return Offset.Zero
-                val delta = newPull - reachabilityPullPx
-                reachabilityPullPx = newPull
-                currentOnPullProgressChanged(reachabilityPullPx / reachabilityMaxPullPx)
-                return Offset(0f, delta)
-            }
-
-            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                // Snap open (stays pulled down for one-handed reach) once pulled far enough;
-                // otherwise spring back. Once open, it only closes when the user scrolls the
-                // list back up (handled by onPreScroll above), not merely by releasing.
-                // Skip while the pager is still settling its own horizontal swipe -- this was
-                // also firing on that fling (pagerState.isScrollInProgress stays true for the
-                // whole settle animation), causing a visible hitch right as the new page
-                // finished sliding in.
-                if (!pagerState.isScrollInProgress) {
-                    settleReachabilityPull()
-                }
-                return Velocity.Zero
-            }
-        }
-    }
 
     var hasComposedOnce by remember { mutableStateOf(false) }
     LaunchedEffect(pagerState.currentPage) {
@@ -299,74 +211,11 @@ fun LibraryScreen(
             // Attached per-page (not around the pager) so it only ever sees scroll deltas
             // bubbling from that page's own list -- fully isolated from the pager's own
             // horizontal swipe/settle gesture handling, which lives above this in the tree.
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .nestedScroll(reachabilityConnection)
-                    // Two-finger drag activates reachability from anywhere in the list, not just
-                    // once scrolled to the top -- the one-handed benefit (bringing the title bar,
-                    // dots and search/settings buttons into thumb reach) is just as useful
-                    // mid-list. A single-finger drag can't be reused for this: it already means
-                    // "scroll toward earlier tracks" everywhere except the top boundary, which
-                    // is the only place a single-finger downward drag has nothing left to
-                    // consume. A second finger is unambiguous and never collides with normal
-                    // scrolling.
-                    .pointerInput(Unit) {
-                        // Deliberately not awaitEachGesture: its block runs on a restricted
-                        // coroutine scope that can only call other pointer-input suspend
-                        // functions, and settleReachabilityPull() (a plain suspend fun using
-                        // animate()) isn't one of those. awaitPointerEventScope carries the same
-                        // restriction only within its own block, so the settle call is placed
-                        // after it returns, back on this (unrestricted) PointerInputScope.
-                        while (true) {
-                            awaitPointerEventScope {
-                                var event: PointerEvent
-                                // Declared outside the loop so the exit condition can reuse the
-                                // count gathered below instead of walking the changes again.
-                                var pressedCount: Int
-                                do {
-                                    // PointerEventPass.Initial runs top-down, before the
-                                    // LazyColumn's own scrollable gesture sees the event --
-                                    // consuming here (once 2+ pointers are down) hides these
-                                    // pointers from it entirely, so it never also scrolls from
-                                    // the same two fingers.
-                                    event = awaitPointerEvent(pass = PointerEventPass.Initial)
-
-                                    // Indexed loops rather than filter/sumOf/any. This runs for
-                                    // every pointer event on the page -- overwhelmingly
-                                    // single-finger scrolls and pager swipes that this gesture
-                                    // ignores -- so the collection operators were allocating a
-                                    // list per event (plus boxing in sumOf) on the touch path at
-                                    // 120Hz, purely to discover there was only one finger down.
-                                    val changes = event.changes
-                                    pressedCount = 0
-                                    var deltaSum = 0f
-                                    for (i in changes.indices) {
-                                        val change = changes[i]
-                                        if (change.pressed) {
-                                            pressedCount++
-                                            deltaSum += change.positionChange().y
-                                        }
-                                    }
-
-                                    if (pressedCount < 2 || pagerState.isScrollInProgress) continue
-                                    val avgDeltaY = deltaSum / pressedCount
-                                    if (avgDeltaY == 0f) continue
-                                    val newPull = (reachabilityPullPx + avgDeltaY)
-                                        .coerceIn(0f, reachabilityMaxPullPx)
-                                    if (newPull != reachabilityPullPx) {
-                                        reachabilityPullPx = newPull
-                                        currentOnPullProgressChanged(reachabilityPullPx / reachabilityMaxPullPx)
-                                    }
-                                    for (i in changes.indices) {
-                                        val change = changes[i]
-                                        if (change.pressed) change.consume()
-                                    }
-                                } while (pressedCount > 0)
-                            }
-                            settleReachabilityPull(viaTwoFinger = true)
-                        }
-                    }
+            ReachabilityPullBox(
+                pullProgress = reachabilityPullProgress,
+                onPullProgressChanged = onPullProgressChanged,
+                isPagerScrollInProgress = { pagerState.isScrollInProgress },
+                modifier = Modifier.fillMaxSize()
             ) {
             when (tabs[page]) {
                 LibraryTab.ALBUMS -> {

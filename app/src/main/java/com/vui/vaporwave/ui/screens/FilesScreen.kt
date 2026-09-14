@@ -1,6 +1,11 @@
 package com.vui.vaporwave.ui.screens
 
-import androidx.compose.foundation.BorderStroke
+import android.net.Uri
+import android.text.format.DateUtils
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,29 +19,54 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.size.Size
+import com.vui.vaporwave.model.RecentAudioEntry
+import com.vui.vaporwave.theme.VaporCyan
+import com.vui.vaporwave.theme.VaporPink
+import java.util.Locale
 
 @Composable
 fun FilesScreen(
     onOpenFilePicker: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    recentlyOpenedFiles: List<RecentAudioEntry> = emptyList(),
+    onOpenRecentFile: (Uri) -> Unit = {},
+    onRemoveRecentFile: (Uri) -> Unit = {}
 ) {
+    // Held here (not per-row) so only one confirmation dialog can ever be on screen at a time.
+    var pendingRemoval by remember { mutableStateOf<RecentAudioEntry?>(null) }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -44,16 +74,6 @@ fun FilesScreen(
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = "Direct Audio Explorer",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.align(Alignment.Start)
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
         // Hero CTA: Pick ANY audio file
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -102,81 +122,160 @@ fun FilesScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        // Nothing to show yet if the user has never opened a file this way -- an empty section
+        // header with no rows under it would just read as broken.
+        if (recentlyOpenedFiles.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(24.dp))
 
-        Text(
-            text = "Storage Access Architecture",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.align(Alignment.Start)
+            Text(
+                text = "Recently Opened Audio:",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.align(Alignment.Start)
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                recentlyOpenedFiles.forEach { entry ->
+                    RecentAudioRow(
+                        entry = entry,
+                        onClick = { onOpenRecentFile(entry.uri) },
+                        onDeleteClick = { pendingRemoval = entry }
+                    )
+                }
+            }
+        }
+    }
+
+    val target = pendingRemoval
+    if (target != null) {
+        AlertDialog(
+            onDismissRequest = { pendingRemoval = null },
+            title = { Text("Remove from Recently Opened Audio?") },
+            text = {
+                Text("\"${target.title}\" will be removed from this list. The file itself won't be deleted.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRemoveRecentFile(target.uri)
+                        pendingRemoval = null
+                    }
+                ) {
+                    Text("Remove")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemoval = null }) {
+                    Text("Cancel")
+                }
+            }
         )
+    }
+}
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Info cards about SAF and Permissions
-        OutlinedCard(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+@Composable
+private fun RecentAudioRow(
+    entry: RecentAudioEntry,
+    onClick: () -> Unit,
+    onDeleteClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, top = 14.dp, bottom = 14.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Brush.linearGradient(listOf(VaporPink, VaporCyan))),
+                contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.Storage,
+                    imageVector = Icons.Default.MusicNote,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.size(28.dp)
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(22.dp)
                 )
-                Spacer(modifier = Modifier.width(14.dp))
-                Column {
-                    Text(
-                        text = "Storage Access Framework (SAF)",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "Uses Android's official system document picker. Works across Android 10 to Android 16 with zero special storage permission needed.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+
+                if (entry.artworkUri != null) {
+                    val context = LocalContext.current
+                    AsyncImage(
+                        model = remember(entry.artworkUri) {
+                            ImageRequest.Builder(context)
+                                .data(entry.artworkUri)
+                                .size(Size(128, 128))
+                                .build()
+                        },
+                        contentDescription = "Artwork",
+                        modifier = Modifier.size(44.dp),
+                        contentScale = ContentScale.Crop
                     )
                 }
             }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        OutlinedCard(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-        ) {
-            Row(
-                modifier = Modifier.padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.AudioFile,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.tertiary,
-                    modifier = Modifier.size(28.dp)
-                )
-                Spacer(modifier = Modifier.width(14.dp))
-                Column {
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        text = "Full Audio Pipeline Integration",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
+                        text = entry.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
-                    Text(
-                        text = "Files opened via SAF automatically support background playback, lockscreen controls, and real-time Vaporwave pitch/tempo effects.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (entry.sizeBytes > 0L) {
+                        Text(
+                            text = "  " + formatFileSize(entry.sizeBytes),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
                 }
+                Text(
+                    text = DateUtils.getRelativeTimeSpanString(
+                        entry.openedAtMs,
+                        System.currentTimeMillis(),
+                        DateUtils.MINUTE_IN_MILLIS,
+                        DateUtils.FORMAT_ABBREV_RELATIVE
+                    ).toString(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(onClick = onDeleteClick) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Remove from Recently Opened Audio",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
+    }
+}
+
+private fun formatFileSize(sizeBytes: Long): String {
+    if (sizeBytes <= 0L) return "Unknown"
+    val kb = sizeBytes / 1024.0
+    val mb = kb / 1024.0
+    return if (mb >= 1.0) {
+        String.format(Locale.US, "%.1f MB", mb)
+    } else {
+        String.format(Locale.US, "%.0f KB", kb)
     }
 }

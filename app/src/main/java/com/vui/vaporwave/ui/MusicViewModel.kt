@@ -25,6 +25,7 @@ import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.model.ExtendedTrackMetadata
 import com.vui.vaporwave.model.PlayStat
 import com.vui.vaporwave.model.Playlist
+import com.vui.vaporwave.model.RecentAudioEntry
 import com.vui.vaporwave.service.VaporwavePlaybackService
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
@@ -174,6 +175,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
     val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
 
+    // Files opened via the Files page's SAF picker (or an incoming "Open with" intent) --
+    // separate from _playStats/recentlyPlayedTracks above, which only cover the scanned
+    // MediaStore library. Newest first, capped in recordRecentlyOpenedFile.
+    private val _recentlyOpenedFiles = MutableStateFlow<List<RecentAudioEntry>>(emptyList())
+    val recentlyOpenedFiles: StateFlow<List<RecentAudioEntry>> = _recentlyOpenedFiles.asStateFlow()
+
     private val _playlistPickerTarget = MutableStateFlow<AudioTrack?>(null)
     val playlistPickerTarget: StateFlow<AudioTrack?> = _playlistPickerTarget.asStateFlow()
 
@@ -261,6 +268,15 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // instead of linear-scanning and string-comparing content URIs.
     private var trackById: Map<Long, AudioTrack> = emptyMap()
 
+    // Files opened via openAndPlayUri (SAF picker / "Open with") deliberately never go into
+    // _allTracks -- unlike the scanned MediaStore library, they're not something the user chose
+    // to add to their library, just a file they opened once, and mixing them in polluted the
+    // Tracks/Albums/Artists tabs with one-off external files. This is the fallback
+    // onMediaItemTransition needs so those files are still resolvable by id once playing (a
+    // "Recently Opened Audio" re-open, or a skip landing back on one), same as trackById above
+    // does for the real library.
+    private val externalTrackById = mutableMapOf<Long, AudioTrack>()
+
     private fun setAllTracks(tracks: List<AudioTrack>) {
         _allTracks.value = tracks
         trackById = tracks.associateBy { it.id }
@@ -279,6 +295,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _playlists.value = repository.loadPlaylists()
             _playStats.value = repository.loadPlayStats()
             _showSwipeHint.value = !repository.hasSeenSwipeHint()
+            _recentlyOpenedFiles.value = repository.loadRecentlyOpenedFiles()
         }
     }
 
@@ -325,7 +342,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val trackId = mediaItem?.mediaId?.toLongOrNull()
-                val track = trackId?.let { trackById[it] }
+                val track = trackId?.let { trackById[it] ?: externalTrackById[it] }
                 _currentTrack.value = track
                 _duration.value = player.duration.coerceAtLeast(0L)
                 track?.let { recordPlay(it.id) }
@@ -561,15 +578,45 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val track = repository.resolveTrackFromUri(uri)
             if (track != null) {
-                val updatedList = listOf(track) + _allTracks.value.filter { it.contentUri != track.contentUri }
-                setAllTracks(updatedList)
+                // Deliberately NOT merged into _allTracks -- see externalTrackById's doc above.
+                externalTrackById[track.id] = track
+                recordRecentlyOpenedFile(uri, track.title, track.artworkUri, track.sizeBytes)
                 // Wait for the MediaController to finish connecting so a cold-start "open with"
                 // launch doesn't silently drop playback if metadata resolution wins the race.
                 awaitMediaController()
-                playTrack(track, updatedList)
+                playTrack(track, listOf(track))
                 _isNowPlayingExpanded.value = true
             }
         }
+    }
+
+    /**
+     * Records (or re-bumps) a "Recently Opened Audio" entry for the Files page. Separate from
+     * _playStats: this fires whenever a file is *opened* via SAF/"Open with" (regardless of
+     * whether MediaStore ever indexes it), not on every play of an already-library track.
+     */
+    private fun recordRecentlyOpenedFile(uri: Uri, title: String, artworkUri: Uri?, sizeBytes: Long) {
+        val deduped = _recentlyOpenedFiles.value.filter { it.uri != uri }
+        val newEntry = RecentAudioEntry(
+            uri = uri,
+            title = title,
+            openedAtMs = System.currentTimeMillis(),
+            artworkUri = artworkUri,
+            sizeBytes = sizeBytes
+        )
+        val updated = (listOf(newEntry) + deduped).take(20)
+        _recentlyOpenedFiles.value = updated
+        viewModelScope.launch { repository.saveRecentlyOpenedFiles(updated) }
+    }
+
+    /**
+     * Forgets one "Recently Opened Audio" entry (Files page delete button). Only removes it from
+     * this list -- the real file on disk/SD card/USB is never touched.
+     */
+    fun removeRecentlyOpenedFile(uri: Uri) {
+        val updated = _recentlyOpenedFiles.value.filter { it.uri != uri }
+        _recentlyOpenedFiles.value = updated
+        viewModelScope.launch { repository.saveRecentlyOpenedFiles(updated) }
     }
 
     fun setSearchQuery(query: String) {
