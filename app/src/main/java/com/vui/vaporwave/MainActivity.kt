@@ -65,6 +65,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.IntOffset
@@ -99,6 +100,7 @@ import com.vui.vaporwave.ui.screens.LibrarySortOption
 import com.vui.vaporwave.ui.screens.MetadataEditorScreen
 import com.vui.vaporwave.ui.screens.SearchScreen
 import com.vui.vaporwave.ui.screens.SettingsScreen
+import com.vui.vaporwave.ui.screens.shareTrack
 import com.vui.vaporwave.ui.screens.SplashScreen
 import com.vui.vaporwave.ui.screens.TrackDetailsScreen
 
@@ -225,6 +227,7 @@ class MainActivity : ComponentActivity() {
             permissionsLauncher.launch(perms.toTypedArray())
         }
 
+        val context = LocalContext.current
         val destination by viewModel.currentDestination.collectAsStateWithLifecycle()
         val currentTrack by viewModel.currentTrack.collectAsStateWithLifecycle()
         val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
@@ -983,11 +986,29 @@ class MainActivity : ComponentActivity() {
                 onSkipPrevious = { viewModel.skipToPrevious() },
                 onToggleRepeat = { viewModel.cycleRepeatMode() },
                 onToggleShuffle = { viewModel.toggleShuffle() },
-                onToggleSlowedAndReverb = { viewModel.toggleSlowedAndReverb() },
+                onSetSpeedAndPitch = { speed, pitch -> viewModel.setSpeedAndPitch(speed, pitch) },
                 onOpenEffects = {
                     viewModel.setNowPlayingExpanded(false)
                     viewModel.setDestination(AppDestination.EFFECTS)
-                }
+                },
+                onOpenAlbum = {
+                    currentTrack?.let {
+                        viewModel.setNowPlayingExpanded(false)
+                        viewModel.openLibraryDetail(LibraryDetail.Album(it.album))
+                    }
+                },
+                onOpenArtist = {
+                    currentTrack?.let {
+                        viewModel.setNowPlayingExpanded(false)
+                        viewModel.openLibraryDetail(LibraryDetail.Artist(it.artist))
+                    }
+                },
+                onOpenSettings = {
+                    viewModel.setNowPlayingExpanded(false)
+                    viewModel.setDestination(AppDestination.SETTINGS)
+                },
+                onShare = { currentTrack?.let { shareTrack(context, it) } },
+                onDeleteTrack = { currentTrack?.let { viewModel.deleteTrack(it) } }
             )
         }
         }
