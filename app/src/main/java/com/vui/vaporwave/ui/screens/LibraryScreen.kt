@@ -13,6 +13,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -1001,6 +1002,10 @@ fun DetailTrackList(
     modifier: Modifier = Modifier,
     showToolbar: Boolean = true,
     heroArtwork: HeroArtwork? = null,
+    // Most Played only: renders a "Your favourites" pair of equal, framed artwork squares for the
+    // 2 most played tracks in the header instead of a single hero square. Mutually exclusive with
+    // [heroArtwork].
+    favouriteTracks: List<AudioTrack>? = null,
     showTrackArtwork: Boolean = true,
     // Artist/playlist/spotlight keep the original three; album detail overrides this to just
     // Shortest/Longest (see MainActivity), which also gates the scrollbars below (neither
@@ -1014,6 +1019,9 @@ fun DetailTrackList(
     // number) using a track-number/title/duration row instead of the standard artwork-forward
     // TrackItem, sorted within each disc rather than across the whole album at once.
     groupByDisc: Boolean = false,
+    // True only for playlist detail -- Recently Added/Most Played/Recently Played show the
+    // overflow menu but not the duration column.
+    showTrackDuration: Boolean = false,
     // Only meaningful for groupByDisc rows, which carry their own overflow menu (album/artist
     // detail's other rows use the shared TrackItem and don't get this menu at all yet).
     onAddToPlaylist: (AudioTrack) -> Unit = {},
@@ -1037,7 +1045,7 @@ fun DetailTrackList(
     val context = LocalContext.current
 
     Column(modifier = modifier.fillMaxSize()) {
-        if (heroArtwork != null && tracks.isNotEmpty()) {
+        if ((heroArtwork != null || favouriteTracks != null) && tracks.isNotEmpty()) {
             // The header (hero art + toolbar) is a real item -- index 0 -- in the LazyColumn
             // below, not a separate overlay with its own hand-tracked scroll position. Every
             // earlier version of this (a NestedScrollConnection summing drag deltas, reading
@@ -1125,53 +1133,63 @@ fun DetailTrackList(
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             // Room for the back button, pinned separately below (always on top,
-                            // never scrolling away).
-                            Spacer(modifier = Modifier.height(52.dp))
-                            Box(
-                                modifier = Modifier
-                                    .size(180.dp)
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = heroArtwork.placeholderIcon,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.outline,
-                                    modifier = Modifier.size(56.dp)
+                            // never scrolling away). The favourites header has no hero artwork
+                            // above its own title, so it can sit closer to the top than the
+                            // hero-artwork layouts below, which need the full clearance.
+                            Spacer(modifier = Modifier.height(if (favouriteTracks != null) 28.dp else 52.dp))
+                            if (favouriteTracks != null) {
+                                FavouriteTracksSection(
+                                    tracks = favouriteTracks,
+                                    currentlyPlayingTrackId = currentTrack?.id,
+                                    onTrackClick = onTrackClick
                                 )
-                                if (heroArtwork.uri != null) {
-                                    val context = LocalContext.current
-                                    AsyncImage(
-                                        model = remember(heroArtwork.uri) {
-                                            ImageRequest.Builder(context)
-                                                .data(heroArtwork.uri)
-                                                .size(Size(360, 360))
-                                                .build()
-                                        },
+                            } else if (heroArtwork != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(180.dp)
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = heroArtwork.placeholderIcon,
                                         contentDescription = null,
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Crop
+                                        tint = MaterialTheme.colorScheme.outline,
+                                        modifier = Modifier.size(56.dp)
                                     )
-                                }
-                                if (onEditPlaylistArtwork != null) {
-                                    Surface(
-                                        onClick = onEditPlaylistArtwork,
-                                        modifier = Modifier
-                                            .align(Alignment.BottomEnd)
-                                            .padding(6.dp)
-                                            .size(32.dp),
-                                        shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        shadowElevation = 3.dp
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                imageVector = Icons.Default.Draw,
-                                                contentDescription = "Choose playlist artwork",
-                                                tint = MaterialTheme.colorScheme.onPrimary,
-                                                modifier = Modifier.size(18.dp)
-                                            )
+                                    if (heroArtwork.uri != null) {
+                                        val context = LocalContext.current
+                                        AsyncImage(
+                                            model = remember(heroArtwork.uri) {
+                                                ImageRequest.Builder(context)
+                                                    .data(heroArtwork.uri)
+                                                    .size(Size(360, 360))
+                                                    .build()
+                                            },
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                    if (onEditPlaylistArtwork != null) {
+                                        Surface(
+                                            onClick = onEditPlaylistArtwork,
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .padding(6.dp)
+                                                .size(32.dp),
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            shadowElevation = 3.dp
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Draw,
+                                                    contentDescription = "Choose playlist artwork",
+                                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1204,6 +1222,8 @@ fun DetailTrackList(
                                     availableSortOptions = availableSortOptions,
                                     modifier = Modifier.fillMaxWidth(0.9f)
                                 )
+                            } else {
+                                Spacer(modifier = Modifier.height(2.dp))
                             }
                         }
                     }
@@ -1250,7 +1270,11 @@ fun DetailTrackList(
                                 // under Name sort too it'd read as index-like clutter unrelated to
                                 // the alphabetical order on screen.
                                 trackNumber = if (sortOption == LibrarySortOption.TRACK_NUMBER) track.trackNumber else null,
-                                isHighlighted = track.id == highlightedTrackId
+                                isHighlighted = track.id == highlightedTrackId,
+                                showDuration = showTrackDuration,
+                                onAddToPlaylist = { onAddToPlaylist(track) },
+                                onShare = { shareTrack(context, track) },
+                                onTrackDetails = { onOpenTrackDetails(track) }
                             )
                         }
                     }
@@ -1466,12 +1490,119 @@ fun DetailTrackList(
                             isPlayingThisTrack = isPlayingThis,
                             onClick = { onTrackClick(track) },
                             modifier = Modifier.padding(horizontal = 8.dp),
-                            showArtwork = showTrackArtwork
+                            showArtwork = showTrackArtwork,
+                            onAddToPlaylist = { onAddToPlaylist(track) },
+                            onShare = { shareTrack(context, track) },
+                            onTrackDetails = { onOpenTrackDetails(track) }
                         )
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * Most Played's top 2, as a "Your favourites" pair: two equal-sized framed artwork squares side
+ * by side, with no rank distinction between them -- just the header's two most played tracks.
+ */
+@Composable
+private fun FavouriteTracksSection(
+    tracks: List<AudioTrack>,
+    currentlyPlayingTrackId: Long?,
+    onTrackClick: (AudioTrack) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val first = tracks.getOrNull(0)
+    val second = tracks.getOrNull(1)
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "Your favourites",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally)) {
+            if (first != null) {
+                FavouriteSquare(
+                    track = first,
+                    isPlaying = first.id == currentlyPlayingTrackId,
+                    onClick = { onTrackClick(first) }
+                )
+            }
+            if (second != null) {
+                FavouriteSquare(
+                    track = second,
+                    isPlaying = second.id == currentlyPlayingTrackId,
+                    onClick = { onTrackClick(second) }
+                )
+            }
+        }
+    }
+}
+
+private val FAVOURITE_SQUARE_SIZE = 148.dp
+
+@Composable
+private fun FavouriteSquare(
+    track: AudioTrack,
+    isPlaying: Boolean,
+    onClick: () -> Unit
+) {
+    val accentColor = MaterialTheme.colorScheme.primary
+    val size = FAVOURITE_SQUARE_SIZE
+    val shape = RoundedCornerShape(14.dp)
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(size)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .clip(shape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                // Playing is marked with just a thicker static border -- no animation at all.
+                .border(width = if (isPlaying) 5.dp else 3.dp, color = accentColor, shape = shape)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.MusicNote,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.size(40.dp)
+            )
+            if (track.artworkUri != null) {
+                val context = LocalContext.current
+                AsyncImage(
+                    model = remember(track.artworkUri) {
+                        ImageRequest.Builder(context)
+                            .data(track.artworkUri)
+                            .size(Size(320, 320))
+                            .build()
+                    },
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = track.title,
+            style = MaterialTheme.typography.labelSmall,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -1810,13 +1941,15 @@ private fun PlaylistsList(
                                 tint = MaterialTheme.colorScheme.outline,
                                 modifier = Modifier.size(24.dp)
                             )
-                            val firstTrackArtworkUri = playlistTracks.firstOrNull()?.artworkUri
-                            if (firstTrackArtworkUri != null) {
+                            val artworkUri = playlist.artworkTrackId
+                                ?.let { id -> tracksById[id]?.artworkUri }
+                                ?: playlistTracks.firstOrNull()?.artworkUri
+                            if (artworkUri != null) {
                                 val context = LocalContext.current
                                 AsyncImage(
-                                    model = remember(firstTrackArtworkUri) {
+                                    model = remember(artworkUri) {
                                         ImageRequest.Builder(context)
-                                            .data(firstTrackArtworkUri)
+                                            .data(artworkUri)
                                             .size(Size(128, 128))
                                             .build()
                                     },

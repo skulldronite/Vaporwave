@@ -66,6 +66,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
@@ -142,7 +143,7 @@ class MainActivity : ComponentActivity() {
                         // The default Crossfade spec is an untuned 300ms tween, which reads more
                         // like an abrupt cut than a deliberate fade -- a bit longer with an
                         // eased curve is what makes it feel like an intentional transition.
-                        animationSpec = tween(durationMillis = 700, easing = FastOutSlowInEasing),
+                        animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
                         label = "splash"
                     ) { splashVisible ->
                         if (splashVisible) {
@@ -240,6 +241,7 @@ class MainActivity : ComponentActivity() {
         val isShuffle by viewModel.isShuffleEnabled.collectAsStateWithLifecycle()
         val isNowPlayingExpanded by viewModel.isNowPlayingExpanded.collectAsStateWithLifecycle()
         val isSearchOpen by viewModel.isSearchOpen.collectAsStateWithLifecycle()
+        val searchOpenSequence by viewModel.searchOpenSequence.collectAsStateWithLifecycle()
         val libraryDetailStack by viewModel.libraryDetailStack.collectAsStateWithLifecycle()
         val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
         val tracks by viewModel.filteredTracks.collectAsStateWithLifecycle()
@@ -351,7 +353,11 @@ class MainActivity : ComponentActivity() {
 
         // Search closes before Now Playing does, so back never has to be pressed twice to
         // dismiss whichever is on top.
+        val searchKeyboardController = LocalSoftwareKeyboardController.current
         BackHandler(enabled = isSearchOpen && !isNowPlayingExpanded) {
+            // Hidden explicitly here rather than left to view teardown -- otherwise the IME
+            // lingers through the whole exit-slide animation instead of closing immediately.
+            searchKeyboardController?.hide()
             viewModel.closeSearch()
         }
 
@@ -586,9 +592,18 @@ class MainActivity : ComponentActivity() {
                 query = searchQuery,
                 results = tracks,
                 currentTrack = currentTrack,
+                isPlaying = isPlaying,
+                progress = progressProvider,
+                openSequence = searchOpenSequence,
                 onQueryChange = { viewModel.setSearchQuery(it) },
                 onTrackClick = { track -> viewModel.playTrack(track, tracks) },
-                onBack = { viewModel.closeSearch() }
+                onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
+                onBack = { viewModel.closeSearch() },
+                onPlayPauseClick = { viewModel.togglePlayPause() },
+                onSkipNextClick = { viewModel.skipToNext() },
+                onExpandNowPlaying = { viewModel.setNowPlayingExpanded(true) },
+                onNowPlayingDragDelta = { delta -> dragSheetBy(delta) },
+                onNowPlayingDragStopped = { velocity -> settleSheet(velocity) }
             )
         }
 
@@ -751,6 +766,7 @@ class MainActivity : ComponentActivity() {
                                             tracks = playlistTracks,
                                             showToolbar = true,
                                             heroArtwork = HeroArtwork(artworkUri, Icons.AutoMirrored.Filled.QueueMusic),
+                                            showTrackDuration = true,
                                             onEditPlaylistArtwork = {
                                                 viewModel.openArtworkPicker(detail.playlistId)
                                             }
@@ -762,7 +778,17 @@ class MainActivity : ComponentActivity() {
                                             SpotlightCategory.MOST_PLAYED -> mostPlayedTracks
                                             SpotlightCategory.RECENTLY_PLAYED -> recentlyPlayedTracks
                                         }
-                                        LibraryDetailPayload(detail.category.label, "${categoryTracks.size} songs", categoryTracks, showToolbar = false)
+                                        LibraryDetailPayload(
+                                            title = detail.category.label,
+                                            subtitle = "${categoryTracks.size} songs",
+                                            tracks = categoryTracks,
+                                            showToolbar = false,
+                                            favouriteTracks = if (detail.category == SpotlightCategory.MOST_PLAYED) {
+                                                categoryTracks.take(2)
+                                            } else {
+                                                null
+                                            }
+                                        )
                                     }
                                     is LibraryDetail.Artist -> error("handled above")
                                 }
@@ -783,6 +809,8 @@ class MainActivity : ComponentActivity() {
                                     onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                                     onEditMetadata = payload.onEditMetadata,
                                     onEditPlaylistArtwork = payload.onEditPlaylistArtwork,
+                                    favouriteTracks = payload.favouriteTracks,
+                                    showTrackDuration = payload.showTrackDuration,
                                     modifier = Modifier.statusBarsPadding()
                                 )
                             }
@@ -997,5 +1025,7 @@ private data class LibraryDetailPayload(
     ),
     val groupByDisc: Boolean = false,
     val onEditMetadata: (() -> Unit)? = null,
-    val onEditPlaylistArtwork: (() -> Unit)? = null
+    val onEditPlaylistArtwork: (() -> Unit)? = null,
+    val favouriteTracks: List<AudioTrack>? = null,
+    val showTrackDuration: Boolean = false
 )
