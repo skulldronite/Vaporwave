@@ -13,10 +13,12 @@ import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.model.ExtendedTrackMetadata
 import com.vui.vaporwave.model.PlayStat
 import com.vui.vaporwave.model.Playlist
+import com.vui.vaporwave.model.RecentAudioEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
 /**
  * MusicRepository manages audio track discovery from MediaStore
@@ -151,6 +153,7 @@ class MusicRepository(private val context: Context) {
         var bitrate: Int = 0
         var trackNumber = 0
         var resolvedOk = false
+        var embeddedArt: ByteArray? = null
 
         try {
             retriever.setDataSource(context, uri)
@@ -168,6 +171,10 @@ class MusicRepository(private val context: Context) {
             // the actual track number.
             val trackStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
             trackNumber = trackStr?.substringBefore('/')?.toIntOrNull() ?: 0
+            // SAF/"Open with" files have no MediaStore album-art row (that lookup is scoped to
+            // the scanned library only, see scanLocalTracks below) -- their tags' own embedded
+            // cover, if any, is the only artwork source available for them.
+            embeddedArt = retriever.embeddedPicture
             resolvedOk = true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -185,20 +192,40 @@ class MusicRepository(private val context: Context) {
             title = getDisplayName(uri) ?: "Audio File"
         }
 
+        val id = stableIdFor(uri)
+
         AudioTrack(
-            id = stableIdFor(uri),
+            id = id,
             title = title,
             artist = artist ?: "External File",
             album = album ?: "Local Storage",
             durationMs = durationMs,
             contentUri = uri,
-            artworkUri = null,
+            artworkUri = embeddedArt?.let { cacheEmbeddedArtwork(id, it) },
             mimeType = mimeType ?: context.contentResolver.getType(uri) ?: "audio/*",
             sampleRateHz = sampleRate,
             bitrateKbps = bitrate,
             isDemoTrack = false,
-            trackNumber = trackNumber
+            trackNumber = trackNumber,
+            sizeBytes = getFileSize(uri) ?: 0L
         )
+    }
+
+    /**
+     * Caches an externally opened file's embedded cover art to this app's own cache dir so it can
+     * be handed to Coil as a plain file Uri, same as every other artworkUri in the app. Named by
+     * the track's own stable id, so re-opening the same file overwrites rather than accumulates a
+     * duplicate on disk.
+     */
+    private fun cacheEmbeddedArtwork(trackId: Long, bytes: ByteArray): Uri? {
+        return try {
+            val dir = File(context.cacheDir, "external_artwork").apply { mkdirs() }
+            val file = File(dir, "$trackId.jpg")
+            file.outputStream().use { it.write(bytes) }
+            Uri.fromFile(file)
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /**
@@ -346,6 +373,21 @@ class MusicRepository(private val context: Context) {
         return name ?: uri.lastPathSegment
     }
 
+    private fun getFileSize(uri: Uri): Long? {
+        var size: Long? = null
+        try {
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (sizeIndex != -1 && cursor.moveToFirst() && !cursor.isNull(sizeIndex)) {
+                    size = cursor.getLong(sizeIndex)
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return size
+    }
+
     // Touching SharedPreferences for the first time reads and parses its XML off disk, so every
     // accessor below is suspending and hops to Dispatchers.IO -- including the writes, whose JSON
     // serialization would otherwise run on whichever thread called them (in practice, the main one).
@@ -431,11 +473,47 @@ class MusicRepository(private val context: Context) {
         prefs.edit().putString(KEY_PLAY_STATS, array.toString()).apply()
     }
 
+    suspend fun loadRecentlyOpenedFiles(): List<RecentAudioEntry> = withContext(Dispatchers.IO) {
+        val raw = prefs.getString(KEY_RECENT_OPENED_FILES, null) ?: return@withContext emptyList()
+        try {
+            val array = JSONArray(raw)
+            (0 until array.length()).map { i ->
+                val obj = array.getJSONObject(i)
+                RecentAudioEntry(
+                    uri = Uri.parse(obj.getString("uri")),
+                    title = obj.getString("title"),
+                    openedAtMs = obj.getLong("openedAt"),
+                    artworkUri = obj.optString("artworkUri", "").takeIf { it.isNotEmpty() }?.let { Uri.parse(it) },
+                    sizeBytes = obj.optLong("sizeBytes", 0L)
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun saveRecentlyOpenedFiles(entries: List<RecentAudioEntry>) = withContext(Dispatchers.IO) {
+        val array = JSONArray()
+        entries.forEach { entry ->
+            val obj = JSONObject()
+            obj.put("uri", entry.uri.toString())
+            obj.put("title", entry.title)
+            obj.put("openedAt", entry.openedAtMs)
+            obj.put("sizeBytes", entry.sizeBytes)
+            if (entry.artworkUri != null) {
+                obj.put("artworkUri", entry.artworkUri.toString())
+            }
+            array.put(obj)
+        }
+        prefs.edit().putString(KEY_RECENT_OPENED_FILES, array.toString()).apply()
+    }
+
     companion object {
         private const val KEY_FAVOURITE_IDS = "favourite_track_ids"
         private const val KEY_PLAYLISTS = "playlists_json"
         private const val KEY_SEEN_SWIPE_HINT = "seen_swipe_hint"
         private const val KEY_PLAY_STATS = "play_stats_json"
+        private const val KEY_RECENT_OPENED_FILES = "recent_opened_files_json"
     }
 }
 
