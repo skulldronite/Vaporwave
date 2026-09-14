@@ -268,6 +268,14 @@ fun NowPlayingSheet(
                                 }
                             )
                             DropdownMenuItem(
+                                text = { Text("Delete") },
+                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                                onClick = {
+                                    isOverflowMenuExpanded = false
+                                    showDeleteConfirmation = true
+                                }
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Share") },
                                 leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                                 onClick = {
@@ -281,14 +289,6 @@ fun NowPlayingSheet(
                                 onClick = {
                                     isOverflowMenuExpanded = false
                                     onOpenSettings()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Delete") },
-                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                                onClick = {
-                                    isOverflowMenuExpanded = false
-                                    showDeleteConfirmation = true
                                 }
                             )
                         }

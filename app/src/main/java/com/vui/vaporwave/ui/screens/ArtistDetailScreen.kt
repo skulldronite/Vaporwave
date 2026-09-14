@@ -66,6 +66,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import android.net.Uri
@@ -130,6 +131,11 @@ fun ArtistDetailScreen(
     onShufflePlay: (List<AudioTrack>) -> Unit,
     onAddToPlaylist: (AudioTrack) -> Unit,
     onOpenTrackDetails: (AudioTrack) -> Unit,
+    // The overlay this screen renders in (see MainActivity) draws its own MiniPlayer as a sibling
+    // rather than through Scaffold's innerPadding, so this is the mini player's real measured
+    // height rather than a guess -- letting the list scroll fully clear of it regardless of the
+    // device's navigation bar style/inset, which a fixed dp constant can't account for.
+    bottomContentPadding: Dp = 120.dp,
     modifier: Modifier = Modifier
 ) {
     // rememberSaveable, not remember: opening an album from the Albums grid pushes it on top of
@@ -233,8 +239,17 @@ fun ArtistDetailScreen(
         ) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 120.dp, top = 4.dp),
+                // A real (layout-shrinking) padding, not just contentPadding -- contentPadding
+                // only adds blank scroll space before the first/after the last item, it doesn't
+                // shrink this LazyColumn's own clip bounds. Since the mini player floats as a
+                // rounded pill with transparent margins around it (see MiniPlayer.kt), rows laid
+                // out at the very bottom of a fillMaxSize list showed through those margins at
+                // any scroll position, not just once scrolled to the true end -- shrinking the
+                // list's own box means rows can never be placed there at all.
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = bottomContentPadding),
+                contentPadding = PaddingValues(bottom = 16.dp, top = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 item {

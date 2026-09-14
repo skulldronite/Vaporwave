@@ -104,6 +104,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
@@ -1054,7 +1055,12 @@ fun DetailTrackList(
     onEditMetadata: (() -> Unit)? = null,
     // Non-null only for playlist detail: small draw icon on the hero artwork's own bottom-right
     // corner, opening a picker to choose which track's art stands in for the playlist's own.
-    onEditPlaylistArtwork: (() -> Unit)? = null
+    onEditPlaylistArtwork: (() -> Unit)? = null,
+    // The overlay this screen renders in (see MainActivity) draws its own MiniPlayer as a sibling
+    // rather than through Scaffold's innerPadding, so this is the mini player's real measured
+    // height rather than a guess -- letting the list scroll fully clear of it regardless of the
+    // device's navigation bar style/inset, which a fixed dp constant can't account for.
+    bottomContentPadding: Dp = 120.dp
 ) {
     var sortOption by remember { mutableStateOf(availableSortOptions.first()) }
     val sortedTracks = remember(tracks, sortOption, showToolbar) {
@@ -1137,9 +1143,18 @@ fun DetailTrackList(
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.fillMaxSize(),
+                    // A real (layout-shrinking) padding, not just contentPadding -- contentPadding
+                    // only adds blank scroll space before the first/after the last item, it doesn't
+                    // shrink this LazyColumn's own clip bounds. Since the mini player floats as a
+                    // rounded pill with transparent margins around it (see MiniPlayer.kt), rows laid
+                    // out at the very bottom of a fillMaxSize list showed through those margins at
+                    // any scroll position, not just once scrolled to the true end -- shrinking the
+                    // list's own box means rows can never be placed there at all.
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = bottomContentPadding),
                     contentPadding = PaddingValues(
-                        bottom = 120.dp,
+                        bottom = 16.dp,
                         top = 4.dp,
                         end = when {
                             showAlphabetScrollbar -> ALPHABET_SCROLLBAR_WIDTH
@@ -1505,8 +1520,12 @@ fun DetailTrackList(
 
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 120.dp, top = 4.dp),
+                    // See the header-variant LazyColumn above for why this is a real padding
+                    // rather than just contentPadding.
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = bottomContentPadding),
+                    contentPadding = PaddingValues(bottom = 16.dp, top = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     items(items = sortedTracks, key = { it.id }) { track ->
