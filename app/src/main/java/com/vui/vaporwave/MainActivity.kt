@@ -65,6 +65,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -697,6 +698,16 @@ class MainActivity : ComponentActivity() {
                 if (detail != null) {
                     saveableStateHolder.SaveableStateProvider(key = detail.stackIdentity()) {
                     Box(modifier = Modifier.fillMaxSize()) {
+                        // The MiniPlayer below is a sibling of the screen's own list rather than
+                        // wired through a Scaffold's innerPadding (see the comment above this
+                        // overlay's AnimatedVisibility), so the list has no automatic way to know
+                        // how tall the bar actually renders -- that height varies with the device's
+                        // navigation bar style/inset (gesture vs. legacy 3-button nav). Measuring it
+                        // here and feeding it back down as contentPadding replaces what used to be
+                        // a fixed 120.dp guess, which left list content visible underneath the bar
+                        // on devices where the real bar was taller than that guess.
+                        val miniPlayerDensity = LocalDensity.current
+                        var miniPlayerHeight by remember { mutableStateOf(120.dp) }
                         Surface(
                             modifier = Modifier.fillMaxSize(),
                             color = MaterialTheme.colorScheme.background,
@@ -722,6 +733,7 @@ class MainActivity : ComponentActivity() {
                                     onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
                                     onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
                                     onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
+                                    bottomContentPadding = miniPlayerHeight,
                                     modifier = Modifier.statusBarsPadding()
                                 )
                             } else {
@@ -818,6 +830,7 @@ class MainActivity : ComponentActivity() {
                                     onEditPlaylistArtwork = payload.onEditPlaylistArtwork,
                                     favouriteTracks = payload.favouriteTracks,
                                     showTrackDuration = payload.showTrackDuration,
+                                    bottomContentPadding = miniPlayerHeight,
                                     modifier = Modifier.statusBarsPadding()
                                 )
                             }
@@ -840,7 +853,11 @@ class MainActivity : ComponentActivity() {
                                 onExpandClick = { viewModel.setNowPlayingExpanded(true) },
                                 onDragDelta = { delta -> dragSheetBy(delta) },
                                 onDragStopped = { velocity -> settleSheet(velocity) },
-                                modifier = Modifier.align(Alignment.BottomCenter)
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .onSizeChanged { size ->
+                                        miniPlayerHeight = with(miniPlayerDensity) { size.height.toDp() }
+                                    }
                             )
                         }
                     }
