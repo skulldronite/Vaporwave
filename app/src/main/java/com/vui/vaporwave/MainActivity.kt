@@ -55,6 +55,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -82,6 +83,7 @@ import com.vui.vaporwave.model.ExtendedTrackMetadata
 import com.vui.vaporwave.theme.VaporwaveTheme
 import com.vui.vaporwave.ui.AppDestination
 import com.vui.vaporwave.ui.LibraryDetail
+import com.vui.vaporwave.ui.LibraryTab
 import com.vui.vaporwave.ui.MetadataEditTarget
 import com.vui.vaporwave.ui.MetadataSaveState
 import com.vui.vaporwave.ui.MusicViewModel
@@ -296,6 +298,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Bumped (any distinct value) by the "jump to Tracks" back handler below -- see
+        // LibraryScreen's scrollToTracksSignal param for why this needs to be its own one-shot
+        // signal rather than just pushing currentLibraryTab to TRACKS directly.
+        var tracksJumpSignal by remember { mutableIntStateOf(0) }
+
         val topBarTitle = when (destination) {
             AppDestination.LIBRARY -> currentLibraryTab.label
             AppDestination.FILES -> "Files"
@@ -410,6 +417,37 @@ class MainActivity : ComponentActivity() {
         }
         BackHandler(enabled = trackDetailsTarget != null && metadataEditTarget == null && !isNowPlayingExpanded) {
             viewModel.closeTrackDetails()
+        }
+
+        // Any Library tab other than Tracks is a peer tab, not a screen pushed on top of
+        // anything -- back here jumps to Tracks instead of falling through to the system
+        // default and exiting the app. Only fires once every overlay above is closed, same
+        // gating as the handlers above. Bumps the signal rather than calling
+        // viewModel.setCurrentLibraryTab directly -- LibraryScreen stays mounted across this (it
+        // isn't a destination switch), so the title needs to slide through each tab in between
+        // as the pager actually animates there, not jump straight to "Tracks" the instant this
+        // fires while the visible page is still wherever it started.
+        BackHandler(
+            enabled = destination == AppDestination.LIBRARY && currentLibraryTab != LibraryTab.TRACKS &&
+                !isSearchOpen && !isNowPlayingExpanded && libraryDetailStack.isEmpty() &&
+                trackDetailsTarget == null && metadataEditTarget == null
+        ) {
+            tracksJumpSignal++
+        }
+
+        // Files/FX Studio/Settings are peers of Library, not screens pushed on top of it -- back
+        // from any of them returns to Library's Tracks tab specifically (not just whatever tab
+        // Library was last showing), rather than falling through and exiting the app. Tracks
+        // itself is deliberately left with no handler at all here: back on Tracks has nothing
+        // left to do but fall through to the system default and exit, same as landing on any
+        // top-level page in a normal Android app.
+        BackHandler(
+            enabled = destination != AppDestination.LIBRARY &&
+                !isSearchOpen && !isNowPlayingExpanded && libraryDetailStack.isEmpty() &&
+                trackDetailsTarget == null && metadataEditTarget == null
+        ) {
+            viewModel.setDestination(AppDestination.LIBRARY)
+            viewModel.setCurrentLibraryTab(LibraryTab.TRACKS)
         }
 
         // Lets the sheet be dragged down from anywhere in its body, not just the header, while
@@ -588,14 +626,7 @@ class MainActivity : ComponentActivity() {
                                 onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                                 reachabilityPullProgress = pullProgressState.floatValue,
                                 onPullProgressChanged = { pullProgressState.floatValue = it },
-                                // Now Playing must be included here too: without it, this screen's
-                                // own no-op edge-swipe guard (see LibraryScreen's BackHandler) stays
-                                // enabled while Now Playing is expanded over the Tracks tab, and
-                                // since it registers after (so takes priority over) the BackHandler
-                                // above that actually collapses Now Playing, back swipes were being
-                                // silently swallowed instead of putting the mini player back down.
-                                isOverlayOpen = isSearchOpen || libraryDetailStack.isNotEmpty() || isNowPlayingExpanded ||
-                                    trackDetailsTarget != null || metadataEditTarget != null
+                                scrollToTracksSignal = tracksJumpSignal
                             )
                         }
                         AppDestination.FILES -> {

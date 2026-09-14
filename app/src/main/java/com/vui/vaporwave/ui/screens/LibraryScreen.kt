@@ -3,7 +3,6 @@
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
@@ -167,12 +166,20 @@ fun LibraryScreen(
     // return, instead of each tab/destination silently starting over from zero.
     reachabilityPullProgress: Float = 0f,
     onPullProgressChanged: (Float) -> Unit = {},
-    isOverlayOpen: Boolean = false
+    // One-shot signal (bump to request, any distinct value) rather than a plain "target tab"
+    // value: see the effect below for why a request needs to be its own channel, separate from
+    // currentTab, instead of just comparing currentTab against the pager's position.
+    scrollToTracksSignal: Int = 0
 ) {
     val tabs = remember { LibraryTab.entries.toList() }
     val pagerState = rememberPagerState(initialPage = tabs.indexOf(currentTab)) { tabs.size }
 
     var hasComposedOnce by remember { mutableStateOf(false) }
+    // currentPage, not settledPage: this also drives the top bar's title/dots (via onTabChanged
+    // -> the ViewModel -> MainActivity), and settledPage only updates once a scroll/fling fully
+    // stops -- noticeably late for that, especially a multi-page animated scroll (see
+    // scrollToTracksSignal below), where the title should track the pager sliding through each
+    // tab in between, not jump only once it lands.
     LaunchedEffect(pagerState.currentPage) {
         onTabChanged(tabs[pagerState.currentPage])
         // Only treat this as a real page change (not the initial composition) so the
@@ -183,13 +190,22 @@ fun LibraryScreen(
         hasComposedOnce = true
     }
 
-    val currentTabShown = tabs.getOrNull(pagerState.currentPage)
-    // The Tracks tab has no back stack of its own; without this, an accidental edge-swipe
-    // (e.g. while reaching for the alphabet scrollbar) falls through and exits the app. Disabled
-    // while a top-level overlay (search or a library detail) is open, since it sits underneath
-    // and would otherwise swallow the back press meant to close that overlay before
-    // MainActivity's own handler ever sees it.
-    BackHandler(enabled = currentTabShown == LibraryTab.TRACKS && !isOverlayOpen) {}
+    // MainActivity's back handler jumping to Tracks from a different tab. Deliberately its own
+    // signal rather than reacting to currentTab (as an earlier version of this did): the effect
+    // above reports every intermediate page a multi-page animateScrollToPage passes through, and
+    // since that round-trips back down as this same currentTab prop, keying off currentTab meant
+    // this effect kept restarting mid-scroll on its own intermediate reports -- worse the longer
+    // the jump (e.g. Albums or Artists back to Tracks crosses more intermediate pages), which cut
+    // the animation short partway instead of ever reaching Tracks. A signal that only changes
+    // once per real back-press can't be re-triggered by anything the resulting scroll itself
+    // reports, so nothing can cut it off partway.
+    LaunchedEffect(scrollToTracksSignal) {
+        if (scrollToTracksSignal == 0) return@LaunchedEffect
+        val targetPage = tabs.indexOf(LibraryTab.TRACKS)
+        if (targetPage >= 0 && targetPage != pagerState.currentPage) {
+            pagerState.animateScrollToPage(targetPage)
+        }
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         // beyondViewportPageCount = 4 (all 5 tabs): keeps every tab composed permanently, never
