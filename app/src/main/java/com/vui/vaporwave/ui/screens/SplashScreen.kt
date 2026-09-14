@@ -147,16 +147,16 @@ fun SplashScreen(
         contourLengths = lengths
         totalLength = total
 
-        progress.animateTo(1f, animationSpec = tween(durationMillis = 2200, easing = FastOutSlowInEasing))
+        progress.animateTo(1f, animationSpec = tween(durationMillis = 1100, easing = FastOutSlowInEasing))
 
         // The flicker-to-life moment: a couple of quick dips before it settles bright and steady.
-        glow.animateTo(0.35f, tween(50))
-        glow.animateTo(1f, tween(70))
-        glow.animateTo(0.5f, tween(50))
-        glow.animateTo(1f, tween(90))
-        glow.animateTo(0.7f, tween(40))
-        glow.animateTo(1f, tween(150))
-        delay(400)
+        glow.animateTo(0.35f, tween(25))
+        glow.animateTo(1f, tween(35))
+        glow.animateTo(0.5f, tween(25))
+        glow.animateTo(1f, tween(45))
+        glow.animateTo(0.7f, tween(20))
+        glow.animateTo(1f, tween(75))
+        delay(200)
         onFinished()
     }
 

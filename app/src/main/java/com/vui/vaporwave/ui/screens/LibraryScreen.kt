@@ -13,6 +13,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -1001,6 +1002,9 @@ fun DetailTrackList(
     modifier: Modifier = Modifier,
     showToolbar: Boolean = true,
     heroArtwork: HeroArtwork? = null,
+    // Most Played only: renders a gold/silver/bronze-framed row of the top 3 tracks' artwork in
+    // the header instead of a single hero square. Mutually exclusive with [heroArtwork].
+    topThreeTracks: List<AudioTrack>? = null,
     showTrackArtwork: Boolean = true,
     // Artist/playlist/spotlight keep the original three; album detail overrides this to just
     // Shortest/Longest (see MainActivity), which also gates the scrollbars below (neither
@@ -1014,6 +1018,9 @@ fun DetailTrackList(
     // number) using a track-number/title/duration row instead of the standard artwork-forward
     // TrackItem, sorted within each disc rather than across the whole album at once.
     groupByDisc: Boolean = false,
+    // True only for playlist detail -- Recently Added/Most Played/Recently Played show the
+    // overflow menu but not the duration column.
+    showTrackDuration: Boolean = false,
     // Only meaningful for groupByDisc rows, which carry their own overflow menu (album/artist
     // detail's other rows use the shared TrackItem and don't get this menu at all yet).
     onAddToPlaylist: (AudioTrack) -> Unit = {},
@@ -1037,7 +1044,7 @@ fun DetailTrackList(
     val context = LocalContext.current
 
     Column(modifier = modifier.fillMaxSize()) {
-        if (heroArtwork != null && tracks.isNotEmpty()) {
+        if ((heroArtwork != null || topThreeTracks != null) && tracks.isNotEmpty()) {
             // The header (hero art + toolbar) is a real item -- index 0 -- in the LazyColumn
             // below, not a separate overlay with its own hand-tracked scroll position. Every
             // earlier version of this (a NestedScrollConnection summing drag deltas, reading
@@ -1127,51 +1134,58 @@ fun DetailTrackList(
                             // Room for the back button, pinned separately below (always on top,
                             // never scrolling away).
                             Spacer(modifier = Modifier.height(52.dp))
-                            Box(
-                                modifier = Modifier
-                                    .size(180.dp)
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = heroArtwork.placeholderIcon,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.outline,
-                                    modifier = Modifier.size(56.dp)
+                            if (topThreeTracks != null) {
+                                MedalTopThreeRow(
+                                    tracks = topThreeTracks,
+                                    onTrackClick = onTrackClick
                                 )
-                                if (heroArtwork.uri != null) {
-                                    val context = LocalContext.current
-                                    AsyncImage(
-                                        model = remember(heroArtwork.uri) {
-                                            ImageRequest.Builder(context)
-                                                .data(heroArtwork.uri)
-                                                .size(Size(360, 360))
-                                                .build()
-                                        },
+                            } else if (heroArtwork != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(180.dp)
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = heroArtwork.placeholderIcon,
                                         contentDescription = null,
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Crop
+                                        tint = MaterialTheme.colorScheme.outline,
+                                        modifier = Modifier.size(56.dp)
                                     )
-                                }
-                                if (onEditPlaylistArtwork != null) {
-                                    Surface(
-                                        onClick = onEditPlaylistArtwork,
-                                        modifier = Modifier
-                                            .align(Alignment.BottomEnd)
-                                            .padding(6.dp)
-                                            .size(32.dp),
-                                        shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        shadowElevation = 3.dp
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                imageVector = Icons.Default.Draw,
-                                                contentDescription = "Choose playlist artwork",
-                                                tint = MaterialTheme.colorScheme.onPrimary,
-                                                modifier = Modifier.size(18.dp)
-                                            )
+                                    if (heroArtwork.uri != null) {
+                                        val context = LocalContext.current
+                                        AsyncImage(
+                                            model = remember(heroArtwork.uri) {
+                                                ImageRequest.Builder(context)
+                                                    .data(heroArtwork.uri)
+                                                    .size(Size(360, 360))
+                                                    .build()
+                                            },
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                    if (onEditPlaylistArtwork != null) {
+                                        Surface(
+                                            onClick = onEditPlaylistArtwork,
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .padding(6.dp)
+                                                .size(32.dp),
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            shadowElevation = 3.dp
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Draw,
+                                                    contentDescription = "Choose playlist artwork",
+                                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1204,6 +1218,8 @@ fun DetailTrackList(
                                     availableSortOptions = availableSortOptions,
                                     modifier = Modifier.fillMaxWidth(0.9f)
                                 )
+                            } else {
+                                Spacer(modifier = Modifier.height(2.dp))
                             }
                         }
                     }
@@ -1250,7 +1266,11 @@ fun DetailTrackList(
                                 // under Name sort too it'd read as index-like clutter unrelated to
                                 // the alphabetical order on screen.
                                 trackNumber = if (sortOption == LibrarySortOption.TRACK_NUMBER) track.trackNumber else null,
-                                isHighlighted = track.id == highlightedTrackId
+                                isHighlighted = track.id == highlightedTrackId,
+                                showDuration = showTrackDuration,
+                                onAddToPlaylist = { onAddToPlaylist(track) },
+                                onShare = { shareTrack(context, track) },
+                                onTrackDetails = { onOpenTrackDetails(track) }
                             )
                         }
                     }
@@ -1466,10 +1486,77 @@ fun DetailTrackList(
                             isPlayingThisTrack = isPlayingThis,
                             onClick = { onTrackClick(track) },
                             modifier = Modifier.padding(horizontal = 8.dp),
-                            showArtwork = showTrackArtwork
+                            showArtwork = showTrackArtwork,
+                            onAddToPlaylist = { onAddToPlaylist(track) },
+                            onShare = { shareTrack(context, track) },
+                            onTrackDetails = { onOpenTrackDetails(track) }
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/** Gold/silver/bronze-framed artwork squares for Most Played's top 3 tracks, in rank order. */
+@Composable
+private fun MedalTopThreeRow(
+    tracks: List<AudioTrack>,
+    onTrackClick: (AudioTrack) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val medalColors = listOf(
+        Color(0xFFFFD700), // gold
+        Color(0xFFC0C0C0), // silver
+        Color(0xFFCD7F32)  // bronze
+    )
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
+    ) {
+        tracks.take(3).forEachIndexed { index, track ->
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.width(112.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(112.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .border(4.dp, medalColors[index], RoundedCornerShape(14.dp))
+                        .clickable { onTrackClick(track) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(40.dp)
+                    )
+                    if (track.artworkUri != null) {
+                        val context = LocalContext.current
+                        AsyncImage(
+                            model = remember(track.artworkUri) {
+                                ImageRequest.Builder(context)
+                                    .data(track.artworkUri)
+                                    .size(Size(320, 320))
+                                    .build()
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.labelSmall,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
@@ -1810,13 +1897,15 @@ private fun PlaylistsList(
                                 tint = MaterialTheme.colorScheme.outline,
                                 modifier = Modifier.size(24.dp)
                             )
-                            val firstTrackArtworkUri = playlistTracks.firstOrNull()?.artworkUri
-                            if (firstTrackArtworkUri != null) {
+                            val artworkUri = playlist.artworkTrackId
+                                ?.let { id -> tracksById[id]?.artworkUri }
+                                ?: playlistTracks.firstOrNull()?.artworkUri
+                            if (artworkUri != null) {
                                 val context = LocalContext.current
                                 AsyncImage(
-                                    model = remember(firstTrackArtworkUri) {
+                                    model = remember(artworkUri) {
                                         ImageRequest.Builder(context)
-                                            .data(firstTrackArtworkUri)
+                                            .data(artworkUri)
                                             .size(Size(128, 128))
                                             .build()
                                     },
