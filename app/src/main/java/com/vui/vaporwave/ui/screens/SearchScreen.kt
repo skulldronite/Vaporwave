@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -62,6 +63,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.vui.vaporwave.model.AudioTrack
+import com.vui.vaporwave.ui.components.MiniPlayer
 import com.vui.vaporwave.ui.components.TrackItem
 import kotlinx.coroutines.delay
 
@@ -78,10 +80,24 @@ fun SearchScreen(
     query: String,
     results: List<AudioTrack>,
     currentTrack: AudioTrack?,
+    isPlaying: Boolean,
+    /** Read lazily so the position tick doesn't recompose the whole search card -- see [MiniPlayer]. */
+    progress: () -> Float,
+    /**
+     * Bumped by the ViewModel every time openSearch() is called. Used to key the placeholder
+     * joke pick below -- see the comment there for why relying on this card's own composition
+     * lifetime isn't reliable for that.
+     */
+    openSequence: Int,
     onQueryChange: (String) -> Unit,
     onTrackClick: (AudioTrack) -> Unit,
     onShufflePlay: (List<AudioTrack>) -> Unit,
     onBack: () -> Unit,
+    onPlayPauseClick: () -> Unit,
+    onSkipNextClick: () -> Unit,
+    onExpandNowPlaying: () -> Unit,
+    onNowPlayingDragDelta: (Float) -> Unit,
+    onNowPlayingDragStopped: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val focusRequester = remember { FocusRequester() }
@@ -100,9 +116,28 @@ fun SearchScreen(
     }
     val closestMatchId = remember(results, query) { findClosestMatch(results, query)?.id }
 
+    // Tracks which rows have already played their entrance animation, for as long as this
+    // search card stays open -- LazyColumn only keeps a small buffer of off-screen items
+    // composed, so scrolling a row far enough away and back disposes and recreates its
+    // remember{} state, which would otherwise replay the animation every time it's scrolled
+    // back into view. A plain mutable set (not observable state) is enough here: it's only ever
+    // read once, at the moment a row's own remember block runs.
+    val animatedTrackIds = remember { mutableSetOf<Long>() }
+
     // Picked once per time the card opens rather than per keystroke -- a joke that changes out
-    // from under you while you're still typing would just be distracting.
-    val placeholderJoke = remember { searchPlaceholderJokes.random() }
+    // from under you while you're still typing would just be distracting. Keyed on openSequence
+    // (bumped by the ViewModel on every openSearch() call) rather than plain remember{} --
+    // AnimatedVisibility can keep this card's composition alive across a close immediately
+    // followed by a reopen (its exit transition hasn't finished tearing the content down yet),
+    // which meant a plain remember{} never actually re-ran and the same line stuck around no
+    // matter how many times the card was reopened. Also excludes whatever was shown last time
+    // (tracked outside composition so it survives across opens) so consecutive genuine opens
+    // don't have a real chance of repeating the same line back to back.
+    val placeholderJoke = remember(openSequence) {
+        searchPlaceholderJokes.filterNot { it == lastPlaceholderJoke }
+            .random()
+            .also { lastPlaceholderJoke = it }
+    }
 
     Surface(
         modifier = modifier.fillMaxSize(),
@@ -112,10 +147,19 @@ fun SearchScreen(
         // into content for no visual reason.
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
     ) {
+        // Boxed rather than a single Column: the search card fully covers the Scaffold's own
+        // mini player underneath it, so without one drawn in here too, playing a track while
+        // the search card is open leaves no visible player at all until it's closed.
+        Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                // Full-screen overlay, so it never gets Scaffold's own bottom-bar inset handling
+                // -- without this, the last search result can end up behind a legacy 3-button
+                // nav bar (e.g. the Galaxy S9), which is tall and opaque unlike gesture nav's
+                // thin inset.
+                .navigationBarsPadding()
                 .imePadding()
         ) {
             Row(
@@ -185,15 +229,26 @@ fun SearchScreen(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         itemsIndexed(items = sortedResults, key = { _, track -> track.id }) { index, track ->
-                            // A fresh Animatable per key -- only rows genuinely new to the
-                            // composition (a track that wasn't already showing before this
-                            // keystroke) animate in; rows that were already visible and just
-                            // shift position aren't replayed. Staggered by list position for a
-                            // ripple-down-the-list reveal instead of every row popping in at once.
-                            val appear = remember { Animatable(0f) }
+                            // Rows genuinely new to the composition (a track that wasn't already
+                            // showing, and hasn't already played its entrance elsewhere in this
+                            // search session) animate in; rows that were already visible, or are
+                            // scrolling back into view after having played once already, appear
+                            // immediately at full opacity instead of replaying. Staggered by list
+                            // position for a ripple-down-the-list reveal instead of every row
+                            // popping in at once -- capped low and quick so scrolling to reveal
+                            // further rows doesn't feel like it's lagging behind the scroll.
+                            val alreadyAnimated = remember(track.id) { track.id in animatedTrackIds }
+                            val appear = remember { Animatable(if (alreadyAnimated) 1f else 0f) }
                             LaunchedEffect(Unit) {
-                                delay(minOf(index, 10) * 25L)
-                                appear.animateTo(1f, tween(320, easing = FastOutSlowInEasing))
+                                if (!alreadyAnimated) {
+                                    // Marked immediately, not after the animation completes --
+                                    // scrolling this row out of view mid-animation cancels this
+                                    // effect before it would otherwise get marked, which would
+                                    // make it replay from scratch instead of just appearing.
+                                    animatedTrackIds += track.id
+                                    delay(minOf(index, 4) * 6L)
+                                    appear.animateTo(1f, tween(120, easing = FastOutSlowInEasing))
+                                }
                             }
                             TrackItem(
                                 track = track,
@@ -218,20 +273,42 @@ fun SearchScreen(
                 }
             }
         }
+
+        if (currentTrack != null) {
+            MiniPlayer(
+                track = currentTrack,
+                isPlaying = isPlaying,
+                progress = progress,
+                onPlayPauseClick = onPlayPauseClick,
+                onSkipNextClick = onSkipNextClick,
+                onExpandClick = onExpandNowPlaying,
+                onDragDelta = onNowPlayingDragDelta,
+                onDragStopped = onNowPlayingDragStopped,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
+        }
     }
 }
 
+// Lives outside composition (rather than in a remember block) so it survives the search card
+// being closed and reopened -- see the comment where it's read, above.
+private var lastPlaceholderJoke: String? = null
+
+// Every entry must stay at or under 23 characters (including spaces) so it never wraps or
+// truncates in the search field's placeholder slot. Kept impersonal -- about the music/library,
+// not jokes directed at the person searching.
 private val searchPlaceholderJokes = listOf(
     "Search here!",
     "Whatever you got!",
-    "Type something, anything...",
-    "What are we hunting for today?",
-    "Got a song stuck in your head?",
+    "Type something...",
+    "Hunting for a track?",
+    "Got a tune in mind?",
     "Your library awaits...",
-    "Go on, I don't judge your music taste",
-    "Looking for something (besides your keys)?",
-    "Find that one song you can't stop humming",
-    "Ready when you are..."
+    "Discover something new",
+    "Find that earworm",
+    "Ready when you are...",
+    "Browse the library"
 )
 
 /**

@@ -1,5 +1,15 @@
 package com.vui.vaporwave.ui.components
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioManager
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.layout.Arrangement
@@ -14,13 +24,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircle
-import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FastForward
@@ -35,6 +46,9 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.automirrored.filled.VolumeDown
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
@@ -49,8 +63,10 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -60,10 +76,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.media3.common.Player
 import coil3.compose.AsyncImage
 import com.vui.vaporwave.model.AudioTrack
@@ -71,6 +89,7 @@ import com.vui.vaporwave.theme.VaporCyan
 import com.vui.vaporwave.theme.VaporMint
 import com.vui.vaporwave.theme.VaporPink
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -106,6 +125,9 @@ fun NowPlayingSheet(
     headerDragModifier: Modifier = Modifier
 ) {
     if (track == null) return
+
+    val volumeState = rememberVolumeState()
+    var isVolumeSliderVisible by remember { mutableStateOf(false) }
 
     Surface(
         modifier = modifier.fillMaxSize(),
@@ -145,11 +167,65 @@ fun NowPlayingSheet(
                     color = MaterialTheme.colorScheme.primary
                 )
 
-                IconButton(onClick = onOpenEffects) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = "Audio Effects",
-                        tint = if (isSlowedAndReverb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                Row {
+                    IconButton(onClick = { isVolumeSliderVisible = !isVolumeSliderVisible }) {
+                        Icon(
+                            imageVector = when {
+                                volumeState.volume == 0 -> Icons.AutoMirrored.Filled.VolumeOff
+                                volumeState.volume < volumeState.maxVolume / 2 -> Icons.AutoMirrored.Filled.VolumeDown
+                                else -> Icons.AutoMirrored.Filled.VolumeUp
+                            },
+                            contentDescription = "Volume",
+                            tint = if (isVolumeSliderVisible) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    IconButton(onClick = onOpenEffects) {
+                        Icon(
+                            imageVector = Icons.Default.Equalizer,
+                            contentDescription = "Equalizer",
+                            tint = if (isSlowedAndReverb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Volume slider -- expands to the sheet's full width (rather than a small popup) so
+            // its step spacing is as spread out as the device's real STREAM_MUSIC range allows,
+            // and animates open/closed instead of just appearing/vanishing.
+            AnimatedVisibility(
+                visible = isVolumeSliderVisible,
+                enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
+                exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Slider(
+                        value = volumeState.volume.toFloat(),
+                        onValueChange = { volumeState.applyVolume(it.roundToInt()) },
+                        valueRange = 0f..volumeState.maxVolume.toFloat(),
+                        steps = (volumeState.maxVolume - 1).coerceAtLeast(0),
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        // Shown as its 0-100 equivalent rather than the device's raw step index
+                        // (e.g. step 7 of a 15-step range reads as "47", not "7") -- the real
+                        // step count still drives the slider's actual granularity above.
+                        text = volumeState.volumePercent.toString(),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(32.dp),
+                        textAlign = TextAlign.Center
                     )
                 }
             }
@@ -484,4 +560,65 @@ private fun formatTime(millis: Long): String {
     } else {
         String.format(Locale.US, "%02d:%02d", minutes, seconds)
     }
+}
+
+/**
+ * Live handle on the real AudioManager media stream -- half the slider bound to [volume] means
+ * half the actual system media volume, the same way the hardware rocker or the system's own
+ * volume dialog behaves, rather than an app-side gain layered on top of it. [maxVolume] is
+ * whatever the device's own STREAM_MUSIC step count is: fixed by the OS/OEM and not something an
+ * app can exceed, so this reads it live instead of assuming a fixed range -- some devices expose
+ * noticeably more steps than others.
+ */
+private class VolumeState(private val audioManager: AudioManager) {
+    val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+    var volume by mutableIntStateOf(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC))
+        private set
+
+    // The device's real step index, rescaled to a universal 0-100 so it reads the same
+    // regardless of how many steps this particular device's STREAM_MUSIC actually has (e.g. a
+    // device with 15 steps and one with 30 both show "50" at the halfway point).
+    val volumePercent: Int
+        get() = (volume * 100f / maxVolume).roundToInt()
+
+    fun applyVolume(value: Int) {
+        volume = value
+        // flags=0: suppress the system's own volume UI/toast, since this slider replaces it.
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0)
+    }
+
+    fun refreshFromSystem() {
+        volume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+    }
+}
+
+/**
+ * Keeps [VolumeState] in sync if the volume changes from outside this sheet -- the hardware
+ * rocker, another app, or a Bluetooth device's own volume control.
+ */
+@Composable
+private fun rememberVolumeState(): VolumeState {
+    val context = LocalContext.current
+    val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    val state = remember { VolumeState(audioManager) }
+
+    DisposableEffect(Unit) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(receiverContext: Context, intent: Intent) {
+                state.refreshFromSystem()
+            }
+        }
+        // AudioManager.VOLUME_CHANGED_ACTION is a hidden/non-public constant -- its literal
+        // value is stable API surface (system apps like Samsung Music rely on the same
+        // broadcast), just not exposed as a symbol in the public SDK.
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            IntentFilter("android.media.VOLUME_CHANGED_ACTION"),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+
+    return state
 }

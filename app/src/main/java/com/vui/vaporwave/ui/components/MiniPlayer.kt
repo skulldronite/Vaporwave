@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -78,6 +79,10 @@ fun MiniPlayer(
     Surface(
         modifier = modifier
             .fillMaxWidth()
+            // Edge-to-edge draws this bar's own row behind the system nav bar by default -- on
+            // gesture nav that inset is thin and barely noticeable, but a legacy 3-button nav bar
+            // (tall and opaque, e.g. the Galaxy S9) sits right on top of the bar without this.
+            .navigationBarsPadding()
             .padding(horizontal = 12.dp, vertical = 6.dp)
             .draggable(
                 orientation = Orientation.Vertical,

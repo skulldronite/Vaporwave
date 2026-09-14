@@ -5,8 +5,9 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Flat, slightly dark violet backdrop so the calligraphy "V" foreground reads clearly. -->
+    <!-- Same near-black backdrop as the app's own dark theme background (VaporVoid), so the
+         neon "V" foreground glows against it exactly like the splash screen's tube does. -->
     <path
         android:pathData="M0,0h108v108h-108z"
-        android:fillColor="#2E1550" />
+        android:fillColor="#0B0813" />
 </vector>

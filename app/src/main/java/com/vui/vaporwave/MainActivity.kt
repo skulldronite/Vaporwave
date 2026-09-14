@@ -241,6 +241,7 @@ class MainActivity : ComponentActivity() {
         val isShuffle by viewModel.isShuffleEnabled.collectAsStateWithLifecycle()
         val isNowPlayingExpanded by viewModel.isNowPlayingExpanded.collectAsStateWithLifecycle()
         val isSearchOpen by viewModel.isSearchOpen.collectAsStateWithLifecycle()
+        val searchOpenSequence by viewModel.searchOpenSequence.collectAsStateWithLifecycle()
         val libraryDetailStack by viewModel.libraryDetailStack.collectAsStateWithLifecycle()
         val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
         val tracks by viewModel.filteredTracks.collectAsStateWithLifecycle()
@@ -591,10 +592,18 @@ class MainActivity : ComponentActivity() {
                 query = searchQuery,
                 results = tracks,
                 currentTrack = currentTrack,
+                isPlaying = isPlaying,
+                progress = progressProvider,
+                openSequence = searchOpenSequence,
                 onQueryChange = { viewModel.setSearchQuery(it) },
                 onTrackClick = { track -> viewModel.playTrack(track, tracks) },
                 onShufflePlay = { pool -> viewModel.playRandomAndShuffle(pool) },
-                onBack = { viewModel.closeSearch() }
+                onBack = { viewModel.closeSearch() },
+                onPlayPauseClick = { viewModel.togglePlayPause() },
+                onSkipNextClick = { viewModel.skipToNext() },
+                onExpandNowPlaying = { viewModel.setNowPlayingExpanded(true) },
+                onNowPlayingDragDelta = { delta -> dragSheetBy(delta) },
+                onNowPlayingDragStopped = { velocity -> settleSheet(velocity) }
             )
         }
 
@@ -774,8 +783,8 @@ class MainActivity : ComponentActivity() {
                                             subtitle = "${categoryTracks.size} songs",
                                             tracks = categoryTracks,
                                             showToolbar = false,
-                                            topThreeTracks = if (detail.category == SpotlightCategory.MOST_PLAYED) {
-                                                categoryTracks.take(3)
+                                            favouriteTracks = if (detail.category == SpotlightCategory.MOST_PLAYED) {
+                                                categoryTracks.take(2)
                                             } else {
                                                 null
                                             }
@@ -800,7 +809,7 @@ class MainActivity : ComponentActivity() {
                                     onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                                     onEditMetadata = payload.onEditMetadata,
                                     onEditPlaylistArtwork = payload.onEditPlaylistArtwork,
-                                    topThreeTracks = payload.topThreeTracks,
+                                    favouriteTracks = payload.favouriteTracks,
                                     showTrackDuration = payload.showTrackDuration,
                                     modifier = Modifier.statusBarsPadding()
                                 )
@@ -1017,6 +1026,6 @@ private data class LibraryDetailPayload(
     val groupByDisc: Boolean = false,
     val onEditMetadata: (() -> Unit)? = null,
     val onEditPlaylistArtwork: (() -> Unit)? = null,
-    val topThreeTracks: List<AudioTrack>? = null,
+    val favouriteTracks: List<AudioTrack>? = null,
     val showTrackDuration: Boolean = false
 )

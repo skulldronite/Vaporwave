@@ -141,6 +141,14 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSearchOpen = MutableStateFlow(false)
     val isSearchOpen: StateFlow<Boolean> = _isSearchOpen.asStateFlow()
 
+    // Bumped on every openSearch() call, so the search card can key its one-off "pick a random
+    // placeholder" logic on this instead of on its own composition lifetime -- AnimatedVisibility
+    // can keep the card's composition alive across a close immediately followed by a reopen (the
+    // exit transition hasn't finished tearing it down yet), which otherwise meant the placeholder
+    // never actually re-rolled and looked stuck on the same line every time.
+    private val _searchOpenSequence = MutableStateFlow(0)
+    val searchOpenSequence: StateFlow<Int> = _searchOpenSequence.asStateFlow()
+
     // A real back stack (not just a single nullable value): opening an album from inside an
     // artist's Albums tab pushes on top of that artist entry rather than replacing it, so
     // closing it pops back to the artist -- at whichever tab it was showing -- instead of
@@ -566,6 +574,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openSearch() {
         _isSearchOpen.value = true
+        _searchOpenSequence.value++
     }
 
     /** Closes the search card and clears the query so the library isn't left filtered behind it. */
