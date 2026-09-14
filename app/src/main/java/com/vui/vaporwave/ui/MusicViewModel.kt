@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import android.widget.Toast
 import androidx.activity.result.IntentSenderRequest
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -15,6 +16,7 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.vui.vaporwave.data.MusicRepository
+import com.vui.vaporwave.data.TrackDeleteResult
 import com.vui.vaporwave.data.tagging.MetadataFields
 import com.vui.vaporwave.data.tagging.TagSaveResult
 import com.vui.vaporwave.model.AlbumSummary
@@ -494,11 +496,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         mediaController?.seekToPreviousMediaItem()
     }
 
+    // OFF -> ONE -> ALL -> OFF -- matches the Now Playing repeat icon's own animated sequence
+    // (bare "1" -> "1" ringed by arrows -> arrows only -> back to bare "1").
     fun cycleRepeatMode() {
         val controller = mediaController ?: return
         val newMode = when (controller.repeatMode) {
-            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ONE
+            Player.REPEAT_MODE_ONE -> Player.REPEAT_MODE_ALL
             else -> Player.REPEAT_MODE_OFF
         }
         controller.repeatMode = newMode
@@ -739,9 +743,50 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _pendingWriteRequest.value = IntentSenderRequest.Builder(intentSender).build()
         }
 
+    /**
+     * Deletes [track]'s file, asking for write access first if it's needed -- see
+     * [MusicRepository.deleteTrack]. If [track] was the one currently playing, moves on to the
+     * next track (or just leaves playback stopped if it was the only one) and collapses the Now
+     * Playing sheet, since it's no longer showing anything that still exists.
+     */
+    fun deleteTrack(track: AudioTrack) {
+        viewModelScope.launch {
+            var result = repository.deleteTrack(track)
+            if (result is TrackDeleteResult.NeedsPermission) {
+                val granted = awaitIntentSender(result.intentSender)
+                result = if (granted) repository.deleteTrack(track) else TrackDeleteResult.Failure("Permission denied")
+            }
+            when (result) {
+                is TrackDeleteResult.Success -> {
+                    if (_currentTrack.value?.id == track.id) {
+                        skipToNext()
+                        setNowPlayingExpanded(false)
+                    }
+                    loadTracks(force = true)
+                }
+                is TrackDeleteResult.Failure -> {
+                    Toast.makeText(getApplication(), result.message, Toast.LENGTH_SHORT).show()
+                }
+                is TrackDeleteResult.NeedsPermission -> Unit // unreachable: retried above
+            }
+        }
+    }
+
+    /**
+     * Creates a new playlist and adds the pending track to it -- unless a playlist with the same
+     * name (case-insensitive) already exists, in which case the track is added to that existing
+     * one instead. The picker dialog already disables its own "Create" button on a duplicate name,
+     * so this is really only a safety net for anything that calls straight through without going
+     * via that UI.
+     */
     fun createPlaylistAndAddTrack(name: String) {
         val track = _playlistPickerTarget.value ?: return
         val trimmedName = name.trim().ifBlank { "New Playlist" }
+        val existing = _playlists.value.firstOrNull { it.name.equals(trimmedName, ignoreCase = true) }
+        if (existing != null) {
+            addTrackToPlaylist(existing.id)
+            return
+        }
         val newPlaylist = Playlist(
             id = System.currentTimeMillis(),
             name = trimmedName,

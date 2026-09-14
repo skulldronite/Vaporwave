@@ -297,6 +297,27 @@ class MusicRepository(private val context: Context) {
     }
 
     /**
+     * Deletes the track's own file from MediaStore. Just attempts the delete and surfaces
+     * [TrackDeleteResult.NeedsPermission] with the recoverable intent Android hands back when it
+     * doesn't already have write access (same RecoverableSecurityException every write path in
+     * this app already handles) -- unlike [saveTrackMetadata]'s batch edits, a single-track delete
+     * has no need for the upfront createWriteRequest dance, since there's only ever one file to
+     * ask permission for.
+     */
+    suspend fun deleteTrack(track: AudioTrack): TrackDeleteResult = withContext(Dispatchers.IO) {
+        val uri = track.contentUri
+            ?: return@withContext TrackDeleteResult.Failure("${track.title}: no file location")
+        try {
+            context.contentResolver.delete(uri, null, null)
+            TrackDeleteResult.Success
+        } catch (e: android.app.RecoverableSecurityException) {
+            TrackDeleteResult.NeedsPermission(e.userAction.actionIntent.intentSender)
+        } catch (e: Exception) {
+            TrackDeleteResult.Failure(e.message ?: "failed to delete")
+        }
+    }
+
+    /**
      * Derives a stable 64-bit id for an externally opened file from its URI.
      * Uses FNV-1a over the full URI string (far larger id space than Uri.hashCode's
      * 32 bits) and steers clear of the reserved -101..-103 range used by demo tracks.
@@ -416,4 +437,10 @@ class MusicRepository(private val context: Context) {
         private const val KEY_SEEN_SWIPE_HINT = "seen_swipe_hint"
         private const val KEY_PLAY_STATS = "play_stats_json"
     }
+}
+
+sealed class TrackDeleteResult {
+    object Success : TrackDeleteResult()
+    data class NeedsPermission(val intentSender: android.content.IntentSender) : TrackDeleteResult()
+    data class Failure(val message: String) : TrackDeleteResult()
 }

@@ -47,6 +47,9 @@ fun PlaylistPickerDialog(
 ) {
     var isCreating by remember { mutableStateOf(playlists.isEmpty()) }
     var newPlaylistName by remember { mutableStateOf("") }
+    val trimmedNewName = newPlaylistName.trim()
+    val isDuplicateName = trimmedNewName.isNotEmpty() &&
+        playlists.any { it.name.equals(trimmedNewName, ignoreCase = true) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -55,13 +58,24 @@ fun PlaylistPickerDialog(
         },
         text = {
             if (isCreating) {
-                OutlinedTextField(
-                    value = newPlaylistName,
-                    onValueChange = { newPlaylistName = it },
-                    placeholder = { Text("Playlist name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Column {
+                    OutlinedTextField(
+                        value = newPlaylistName,
+                        onValueChange = { newPlaylistName = it },
+                        placeholder = { Text("Playlist name") },
+                        singleLine = true,
+                        isError = isDuplicateName,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (isDuplicateName) {
+                        Text(
+                            text = "A playlist named \"$trimmedNewName\" already exists",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp, start = 4.dp)
+                        )
+                    }
+                }
             } else {
                 Column {
                     LazyColumn(modifier = Modifier.fillMaxWidth()) {
@@ -124,7 +138,7 @@ fun PlaylistPickerDialog(
             if (isCreating) {
                 TextButton(
                     onClick = { onCreatePlaylist(newPlaylistName) },
-                    enabled = newPlaylistName.isNotBlank()
+                    enabled = newPlaylistName.isNotBlank() && !isDuplicateName
                 ) {
                     Text("Create & Add")
                 }
