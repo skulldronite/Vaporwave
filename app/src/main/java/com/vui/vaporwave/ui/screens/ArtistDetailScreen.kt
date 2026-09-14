@@ -191,8 +191,46 @@ fun ArtistDetailScreen(
     }
     val context = LocalContext.current
 
+    // A swipe anywhere on this screen -- header included, not just over the track/album rows --
+    // triggers the same tab switch the pill does. It's a threshold gesture (drag far enough, then
+    // it snaps to the fixed crossfade below), not a finger-tracking pager: a real pager needs to
+    // own its own horizontal drag axis independently of this list's vertical one, which is more
+    // than what's being asked for here. Hoisted to this outer scope (rather than declared inside
+    // the LazyColumn's own item{} block) so the gesture can be attached to the Box that wraps the
+    // whole screen body below, not just the list content beneath the header.
+    var dragAccumulatorPx by remember { mutableFloatStateOf(0f) }
+    val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
+
     Column(modifier = modifier.fillMaxSize()) {
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                // Attached here rather than on the AnimatedContent below (as it used to be) so the
+                // whole screen -- hero artwork, title, toolbar, and the list -- is a valid swipe
+                // zone, not just the track/album rows themselves. Vertical scrolling is unaffected:
+                // detectHorizontalDragGestures only claims a touch once it crosses a *horizontal*
+                // touch-slop threshold, so a vertical drag is left unconsumed for the LazyColumn's
+                // own scroll handling underneath to pick up, exactly as it already did when this
+                // was scoped to a single item.
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragAccumulatorPx = 0f },
+                        onDragEnd = {
+                            if (dragAccumulatorPx <= -swipeThresholdPx) {
+                                setViewMode(ArtistViewMode.ALBUMS)
+                            } else if (dragAccumulatorPx >= swipeThresholdPx) {
+                                setViewMode(ArtistViewMode.TRACKS)
+                            }
+                            dragAccumulatorPx = 0f
+                        },
+                        onDragCancel = { dragAccumulatorPx = 0f }
+                    ) { change, dragAmount ->
+                        dragAccumulatorPx += dragAmount
+                        change.consume()
+                    }
+                }
+        ) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -274,13 +312,6 @@ fun ArtistDetailScreen(
                 // instead of only the rows currently on screen -- acceptable for a per-artist
                 // track/album count, but this is why it isn't done for a whole-library list.
                 item {
-                    // A swipe here triggers the same tab switch the pill does -- it's a threshold
-                    // gesture (drag far enough, then it snaps to the fixed crossfade below), not a
-                    // finger-tracking pager: a real pager needs to own its own horizontal drag axis
-                    // independently of this list's vertical one, which means pulling the header out
-                    // from being a LazyColumn item -- more than what's being asked for here.
-                    var dragAccumulatorPx by remember { mutableFloatStateOf(0f) }
-                    val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
                     AnimatedContent(
                         targetState = viewMode,
                         // `using null`, same reasoning as the library-detail stack transition in
@@ -306,23 +337,7 @@ fun ArtistDetailScreen(
                             }
                         },
                         label = "artistViewMode",
-                        modifier = Modifier.pointerInput(Unit) {
-                            detectHorizontalDragGestures(
-                                onDragStart = { dragAccumulatorPx = 0f },
-                                onDragEnd = {
-                                    if (dragAccumulatorPx <= -swipeThresholdPx) {
-                                        setViewMode(ArtistViewMode.ALBUMS)
-                                    } else if (dragAccumulatorPx >= swipeThresholdPx) {
-                                        setViewMode(ArtistViewMode.TRACKS)
-                                    }
-                                    dragAccumulatorPx = 0f
-                                },
-                                onDragCancel = { dragAccumulatorPx = 0f }
-                            ) { change, dragAmount ->
-                                dragAccumulatorPx += dragAmount
-                                change.consume()
-                            }
-                        }
+                        modifier = Modifier.fillMaxWidth()
                     ) { mode ->
                         Column(modifier = Modifier.fillMaxWidth()) {
                             when (mode) {
