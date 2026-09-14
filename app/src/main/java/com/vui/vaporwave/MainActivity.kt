@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.animation.AnimatedContent
@@ -84,6 +85,7 @@ import com.vui.vaporwave.ui.SpotlightCategory
 import com.vui.vaporwave.ui.components.MiniPlayer
 import com.vui.vaporwave.ui.components.NowPlayingSheet
 import com.vui.vaporwave.ui.components.PlaylistPickerDialog
+import com.vui.vaporwave.ui.components.TrackArtworkPickerDialog
 import com.vui.vaporwave.ui.components.VaporwaveTopBar
 import com.vui.vaporwave.ui.screens.ArtistDetailScreen
 import com.vui.vaporwave.ui.screens.DetailTrackList
@@ -250,6 +252,7 @@ class MainActivity : ComponentActivity() {
         val artists by viewModel.artists.collectAsStateWithLifecycle()
         val playlists by viewModel.playlists.collectAsStateWithLifecycle()
         val playlistPickerTarget by viewModel.playlistPickerTarget.collectAsStateWithLifecycle()
+        val artworkPickerPlaylistId by viewModel.artworkPickerPlaylistId.collectAsStateWithLifecycle()
         val trackDetailsTarget by viewModel.trackDetailsTarget.collectAsStateWithLifecycle()
         val metadataEditTarget by viewModel.metadataEditTarget.collectAsStateWithLifecycle()
         val metadataSaveState by viewModel.metadataSaveState.collectAsStateWithLifecycle()
@@ -508,6 +511,8 @@ class MainActivity : ComponentActivity() {
                             onOpenArtist = { name -> viewModel.openLibraryDetail(LibraryDetail.Artist(name)) },
                             onOpenPlaylist = { id -> viewModel.openLibraryDetail(LibraryDetail.PlaylistDetail(id)) },
                             onOpenSpotlight = { category -> viewModel.openLibraryDetail(LibraryDetail.Spotlight(category)) },
+                            onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
+                            onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                             onPullProgressChanged = { pullProgressState.floatValue = it },
                             // Now Playing must be included here too: without it, this screen's
                             // own no-op edge-swipe guard (see LibraryScreen's BackHandler) stays
@@ -552,6 +557,19 @@ class MainActivity : ComponentActivity() {
                 onSelectPlaylist = { playlistId -> viewModel.addTrackToPlaylist(playlistId) },
                 onCreatePlaylist = { name -> viewModel.createPlaylistAndAddTrack(name) },
                 onDismiss = { viewModel.dismissPlaylistPicker() }
+            )
+        }
+
+        // Playlist artwork picker (opened via the draw icon on a playlist's hero artwork)
+        if (artworkPickerPlaylistId != null) {
+            val playlistId = artworkPickerPlaylistId!!
+            val playlistTracks = playlists.find { it.id == playlistId }
+                ?.trackIds.orEmpty()
+                .mapNotNull { id -> allTracks.find { it.id == id } }
+            TrackArtworkPickerDialog(
+                tracks = playlistTracks,
+                onSelectTrack = { track -> viewModel.setPlaylistArtwork(playlistId, track.id) },
+                onDismiss = { viewModel.dismissArtworkPicker() }
             )
         }
 
@@ -723,7 +741,20 @@ class MainActivity : ComponentActivity() {
                                     is LibraryDetail.PlaylistDetail -> {
                                         val playlist = playlists.find { it.id == detail.playlistId }
                                         val playlistTracks = playlist?.trackIds.orEmpty().mapNotNull { id -> allTracks.find { it.id == id } }
-                                        LibraryDetailPayload(playlist?.name ?: "Playlist", "${playlistTracks.size} songs", playlistTracks, showToolbar = true)
+                                        val artworkUri = playlist?.artworkTrackId
+                                            ?.let { id -> allTracks.find { it.id == id }?.artworkUri }
+                                            ?: playlistTracks.firstOrNull()?.artworkUri
+                                        val totalMs = playlistTracks.sumOf { it.durationMs }
+                                        LibraryDetailPayload(
+                                            title = playlist?.name ?: "Playlist",
+                                            subtitle = "${playlistTracks.size} songs • ${formatTotalDuration(totalMs)}",
+                                            tracks = playlistTracks,
+                                            showToolbar = true,
+                                            heroArtwork = HeroArtwork(artworkUri, Icons.AutoMirrored.Filled.QueueMusic),
+                                            onEditPlaylistArtwork = {
+                                                viewModel.openArtworkPicker(detail.playlistId)
+                                            }
+                                        )
                                     }
                                     is LibraryDetail.Spotlight -> {
                                         val categoryTracks = when (detail.category) {
@@ -751,6 +782,7 @@ class MainActivity : ComponentActivity() {
                                     onAddToPlaylist = { track -> viewModel.openPlaylistPicker(track) },
                                     onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                                     onEditMetadata = payload.onEditMetadata,
+                                    onEditPlaylistArtwork = payload.onEditPlaylistArtwork,
                                     modifier = Modifier.statusBarsPadding()
                                 )
                             }
@@ -964,5 +996,6 @@ private data class LibraryDetailPayload(
         LibrarySortOption.ARTIST
     ),
     val groupByDisc: Boolean = false,
-    val onEditMetadata: (() -> Unit)? = null
+    val onEditMetadata: (() -> Unit)? = null,
+    val onEditPlaylistArtwork: (() -> Unit)? = null
 )
