@@ -155,6 +155,11 @@ fun ArtistDetailScreen(
     }
 
     val allTracks = remember(albumGroups) { albumGroups.flatMap { it.tracks } }
+    // Computed per album group, not on the flattened list -- see [stableTrackNumbers]'s doc on
+    // why numbering has to stay scoped to one album's own discs at a time.
+    val trackNumbers = remember(albumGroups) {
+        buildMap { albumGroups.forEach { group -> putAll(stableTrackNumbers(group.tracks)) } }
+    }
     val tracksModeGroups = remember(albumGroups) {
         albumGroups.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
     }
@@ -335,6 +340,7 @@ fun ArtistDetailScreen(
                                                 onAddToPlaylist = { onAddToPlaylist(track) },
                                                 onShare = { shareTrack(context, track) },
                                                 onTrackDetails = { onOpenTrackDetails(track) },
+                                                leadingNumber = trackNumbers[track.id] ?: track.trackNumber,
                                                 modifier = Modifier.padding(horizontal = 8.dp)
                                             )
                                         }
