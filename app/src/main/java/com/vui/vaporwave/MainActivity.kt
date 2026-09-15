@@ -1,11 +1,14 @@
 package com.vui.vaporwave
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.media.audiofx.AudioEffect
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -193,6 +196,23 @@ class MainActivity : ComponentActivity() {
     private var openDocumentCallback: (() -> Unit)? = null
     private fun openDocumentPicker() {
         openDocumentCallback?.invoke()
+    }
+
+    // Hands off to whichever system equalizer app the device ships (Settings > Sound on stock
+    // Android, or the OEM's own Sound/MusicFX app) rather than building one in-app -- this app
+    // has no audio effects engine of its own to drive one. Not every device has one installed at
+    // all (stock AOSP emulators, some budget OEMs), so this must fail quietly with a Toast rather
+    // than crash on ActivityNotFoundException.
+    private fun openSystemEqualizer() {
+        val intent = Intent(AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL).apply {
+            putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
+            putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
+        }
+        try {
+            startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, "No equalizer app found on this device", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // Without this, a picked/opened file's read access dies with the app process -- fine for
@@ -522,6 +542,7 @@ class MainActivity : ComponentActivity() {
                         destination = destination,
                         onSearchClick = { viewModel.openSearch() },
                         onDestinationSelected = { viewModel.setDestination(it) },
+                        onOpenEqualizer = { openSystemEqualizer() },
                         pullProgress = pullProgress
                     )
                 }

@@ -296,7 +296,27 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _playStats.value = repository.loadPlayStats()
             _showSwipeHint.value = !repository.hasSeenSwipeHint()
             _recentlyOpenedFiles.value = repository.loadRecentlyOpenedFiles()
+            _useVaporwaveTheme.value = repository.loadUseVaporwaveTheme()
+            _useDarkTheme.value = repository.loadUseDarkTheme()
+            // Play stats and the scanned library (loadTracks, running concurrently) can finish in
+            // either order -- try the restore from whichever lands second.
+            restoreLastPlayedTrackIfNeeded()
         }
+    }
+
+    /**
+     * Falls back to the most recently played track when nothing is actually playing on launch
+     * (restoreCurrentTrackFromPlayer found no live media item) -- the mini player should show
+     * the last song played, not stay blank, and definitely not an arbitrary "first in the
+     * library" pick. A no-op once _currentTrack is set from anywhere else (the live session, or
+     * an earlier call to this same function), and while play stats or the library scan -- both
+     * loaded concurrently with this, in no guaranteed order -- haven't finished yet.
+     */
+    private fun restoreLastPlayedTrackIfNeeded() {
+        if (_currentTrack.value != null) return
+        val lastPlayedId = _playStats.value.values.maxByOrNull { it.lastPlayedAt }?.trackId ?: return
+        val track = trackById[lastPlayedId] ?: externalTrackById[lastPlayedId] ?: return
+        _currentTrack.value = track
     }
 
     private fun connectToService() {
@@ -322,6 +342,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _playbackPitch.value = player.playbackParameters.pitch
         _repeatMode.value = player.repeatMode
         _isShuffleEnabled.value = player.shuffleModeEnabled
+        _duration.value = player.duration.coerceAtLeast(0L)
+        _playbackPosition.value = player.currentPosition.coerceAtLeast(0L)
+        // Restores whatever the session is already playing when this (re)connects to it -- e.g.
+        // playback kept running in the background after the app was closed, then reopened.
+        // Without this, nothing resolves _currentTrack until the next real
+        // onMediaItemTransition fires (there isn't one here -- nothing is transitioning, it's
+        // already mid-playback), so Now Playing/the mini player either stayed blank or got
+        // overwritten by applyLoadedTracks' own "first scanned track" default once the library
+        // scan finished, instead of showing the track actually playing.
+        restoreCurrentTrackFromPlayer(player)
 
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -364,6 +394,33 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
         if (player.isPlaying) {
             startProgressTracker()
+        }
+    }
+
+    /**
+     * Resolves _currentTrack from whatever the session is already sitting on, same id lookup
+     * onMediaItemTransition uses -- but with a fallback: trackById/externalTrackById may still be
+     * empty at connect time (the library scan runs concurrently in loadTracks() and can finish
+     * either before or after this), so build a placeholder directly from the media item's own
+     * embedded metadata (set when it was originally queued) rather than showing nothing. Once the
+     * scan does finish, applyLoadedTracks below upgrades this placeholder to the real AudioTrack.
+     */
+    private fun restoreCurrentTrackFromPlayer(player: Player) {
+        val mediaItem = player.currentMediaItem ?: return
+        val trackId = mediaItem.mediaId.toLongOrNull() ?: return
+        val known = trackById[trackId] ?: externalTrackById[trackId]
+        _currentTrack.value = known ?: run {
+            val metadata = mediaItem.mediaMetadata
+            AudioTrack(
+                id = trackId,
+                title = metadata.title?.toString()?.takeIf { it.isNotBlank() } ?: "Unknown",
+                artist = metadata.artist?.toString()?.takeIf { it.isNotBlank() } ?: "Unknown Artist",
+                album = metadata.albumTitle?.toString().orEmpty(),
+                durationMs = player.duration.coerceAtLeast(0L),
+                contentUri = mediaItem.localConfiguration?.uri,
+                artworkUri = metadata.artworkUri,
+                mimeType = "audio/*"
+            )
         }
     }
 
@@ -423,9 +480,20 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun applyLoadedTracks(tracks: List<AudioTrack>) {
         setAllTracks(tracks)
-        if (_currentTrack.value == null && tracks.isNotEmpty()) {
-            _currentTrack.value = tracks.first()
-            currentPlaylist = tracks
+        val existing = _currentTrack.value
+        if (existing == null) {
+            // Not "default to tracks.first()" (an arbitrary track the user never picked) --
+            // falls back to the last track actually played, if any, once play stats (loaded
+            // concurrently, in no guaranteed order relative to this scan) are available too.
+            restoreLastPlayedTrackIfNeeded()
+        } else {
+            // Upgrades a placeholder built from the session's own bare metadata (see
+            // restoreCurrentTrackFromPlayer -- the scan may not have finished yet when the
+            // MediaController connected) to the real, richer AudioTrack now that trackById is
+            // actually populated. A no-op once it's already that same object.
+            trackById[existing.id]?.let { richer ->
+                if (richer !== existing) _currentTrack.value = richer
+            }
         }
     }
 
@@ -665,10 +733,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setUseVaporwaveTheme(useVaporwave: Boolean) {
         _useVaporwaveTheme.value = useVaporwave
+        viewModelScope.launch { repository.saveUseVaporwaveTheme(useVaporwave) }
     }
 
     fun setUseDarkTheme(useDark: Boolean) {
         _useDarkTheme.value = useDark
+        viewModelScope.launch { repository.saveUseDarkTheme(useDark) }
     }
 
     fun toggleFavourite(trackId: Long) {

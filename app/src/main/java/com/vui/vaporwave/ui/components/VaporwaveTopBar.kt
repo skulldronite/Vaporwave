@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Search
@@ -67,6 +68,7 @@ fun VaporwaveTopBar(
     destination: AppDestination,
     onSearchClick: () -> Unit,
     onDestinationSelected: (AppDestination) -> Unit,
+    onOpenEqualizer: () -> Unit,
     modifier: Modifier = Modifier,
     pullProgress: Float = 0f
 ) {
@@ -216,6 +218,14 @@ fun VaporwaveTopBar(
                         onClick = {
                             isMenuExpanded = false
                             onDestinationSelected(AppDestination.LIBRARY)
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Equalizer") },
+                        leadingIcon = { Icon(Icons.Default.Equalizer, contentDescription = null) },
+                        onClick = {
+                            isMenuExpanded = false
+                            onOpenEqualizer()
                         }
                     )
                     DropdownMenuItem(
