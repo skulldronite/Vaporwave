@@ -27,7 +27,9 @@ import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.model.ExtendedTrackMetadata
 import com.vui.vaporwave.model.PlayStat
 import com.vui.vaporwave.model.Playlist
+import com.vui.vaporwave.model.LyricsResult
 import com.vui.vaporwave.model.RecentAudioEntry
+import com.vui.vaporwave.model.ThemeMode
 import com.vui.vaporwave.service.VaporwavePlaybackService
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
@@ -39,7 +41,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -104,6 +108,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _currentTrack = MutableStateFlow<AudioTrack?>(null)
     val currentTrack: StateFlow<AudioTrack?> = _currentTrack.asStateFlow()
+
+    // Null means "no synced lyrics for the current track" (no .lrc found, unreadable, or empty
+    // once parsed) -- re-resolved by the currentTrack collector below every time the playing
+    // track's id actually changes.
+    private val _lyrics = MutableStateFlow<LyricsResult?>(null)
+    val lyrics: StateFlow<LyricsResult?> = _lyrics.asStateFlow()
+
+    // Null until the user grants a folder via Settings' "Lyrics Folder Access" -- see
+    // MusicRepository.fetchLyrics's SAF fallback for why this exists at all.
+    private val _lyricsTreeUri = MutableStateFlow<Uri?>(null)
+    val lyricsTreeUri: StateFlow<Uri?> = _lyricsTreeUri.asStateFlow()
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
@@ -175,8 +190,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _useVaporwaveTheme = MutableStateFlow(true)
     val useVaporwaveTheme: StateFlow<Boolean> = _useVaporwaveTheme.asStateFlow()
 
-    private val _useDarkTheme = MutableStateFlow(true)
-    val useDarkTheme: StateFlow<Boolean> = _useDarkTheme.asStateFlow()
+    // DARK is the pre-ThemeMode default (matches the old useDarkTheme's default of true) --
+    // actually seeded from disk (migrating the old boolean if needed) by loadPersistedState().
+    private val _themeMode = MutableStateFlow(ThemeMode.DARK)
+    val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
+
+    private val _useMaterialYou = MutableStateFlow(false)
+    val useMaterialYou: StateFlow<Boolean> = _useMaterialYou.asStateFlow()
+
+    private val _useOledBlack = MutableStateFlow(false)
+    val useOledBlack: StateFlow<Boolean> = _useOledBlack.asStateFlow()
 
     private val _favouriteTrackIds = MutableStateFlow<Set<Long>>(emptySet())
     val favouriteTrackIds: StateFlow<Set<Long>> = _favouriteTrackIds.asStateFlow()
@@ -299,6 +322,24 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         connectToService()
         loadTracks()
         loadPersistedState()
+        observeLyricsForCurrentTrack()
+    }
+
+    // Re-resolves lyrics only when the playing track's id actually changes (not on every
+    // _currentTrack update -- e.g. restoreLastPlayedTrackIfNeeded/richer-metadata swaps can set
+    // the same track object again). collectLatest cancels any in-flight lookup for a track the
+    // user has already skipped past, so a slow lrc read never lands after the track has moved on.
+    private fun observeLyricsForCurrentTrack() {
+        viewModelScope.launch {
+            currentTrack
+                .map { it?.id }
+                .distinctUntilChanged()
+                .collectLatest {
+                    _lyrics.value = null
+                    val track = _currentTrack.value
+                    _lyrics.value = if (track != null) repository.fetchLyrics(track) else null
+                }
+        }
     }
 
     /** Seeds favourites, playlists, play stats and the swipe hint from disk, off the main thread. */
@@ -310,10 +351,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _showSwipeHint.value = !repository.hasSeenSwipeHint()
             _recentlyOpenedFiles.value = repository.loadRecentlyOpenedFiles()
             _useVaporwaveTheme.value = repository.loadUseVaporwaveTheme()
-            _useDarkTheme.value = repository.loadUseDarkTheme()
+            // Migrates a pre-ThemeMode install's old dark/light boolean the first time this
+            // version runs, instead of everyone landing on SYSTEM by surprise.
+            _themeMode.value = repository.loadThemeMode()
+                ?: if (repository.loadUseDarkTheme()) ThemeMode.DARK else ThemeMode.LIGHT
+            _useMaterialYou.value = repository.loadUseMaterialYou()
+            _useOledBlack.value = repository.loadUseOledBlack()
             _isEqEnabled.value = repository.loadEqEnabled()
             repository.loadEqBandGains()?.let { _eqBandGains.value = it }
             sendEqualizerStateToService()
+            _lyricsTreeUri.value = repository.loadLyricsTreeUri()
             // Play stats and the scanned library (loadTracks, running concurrently) can finish in
             // either order -- try the restore from whichever lands second.
             restoreLastPlayedTrackIfNeeded()
@@ -757,9 +804,19 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repository.saveUseVaporwaveTheme(useVaporwave) }
     }
 
-    fun setUseDarkTheme(useDark: Boolean) {
-        _useDarkTheme.value = useDark
-        viewModelScope.launch { repository.saveUseDarkTheme(useDark) }
+    fun setThemeMode(mode: ThemeMode) {
+        _themeMode.value = mode
+        viewModelScope.launch { repository.saveThemeMode(mode) }
+    }
+
+    fun setUseMaterialYou(enabled: Boolean) {
+        _useMaterialYou.value = enabled
+        viewModelScope.launch { repository.saveUseMaterialYou(enabled) }
+    }
+
+    fun setUseOledBlack(enabled: Boolean) {
+        _useOledBlack.value = enabled
+        viewModelScope.launch { repository.saveUseOledBlack(enabled) }
     }
 
     fun setEqualizer(enabled: Boolean, gains: List<Float>) {
@@ -779,6 +836,24 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             putFloatArray(VaporwavePlaybackService.EXTRA_EQ_GAINS, _eqBandGains.value.toFloatArray())
         }
         controller.sendCustomCommand(SessionCommand(VaporwavePlaybackService.COMMAND_EQ_APPLY, Bundle.EMPTY), args)
+    }
+
+    /**
+     * Called once MainActivity's SAF folder picker returns a tree Uri and has already taken the
+     * persistable permission grant on it (that call needs the Activity, so it can't happen here).
+     * Re-resolves lyrics for whatever's currently playing immediately after, so a track that just
+     * failed to find its .lrc via the other fallbacks gets a fresh chance without waiting for the
+     * user to skip to another track first.
+     */
+    fun setLyricsTreeUri(uri: Uri) {
+        _lyricsTreeUri.value = uri
+        viewModelScope.launch {
+            repository.saveLyricsTreeUri(uri)
+            val track = _currentTrack.value
+            if (track != null) {
+                _lyrics.value = repository.fetchLyrics(track)
+            }
+        }
     }
 
     fun toggleFavourite(trackId: Long) {

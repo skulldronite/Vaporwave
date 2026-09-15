@@ -3,21 +3,32 @@ package com.vui.vaporwave.data
 import android.content.ContentUris
 import android.content.Context
 import android.media.MediaMetadataRetriever
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.util.Log
+import androidx.documentfile.provider.DocumentFile
+import com.vui.vaporwave.data.lyrics.EmbeddedLyricsReader
+import com.vui.vaporwave.data.lyrics.LrcParser
 import com.vui.vaporwave.data.tagging.AudioTagWriter
 import com.vui.vaporwave.data.tagging.MetadataFields
 import com.vui.vaporwave.data.tagging.TagSaveResult
 import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.model.ExtendedTrackMetadata
+import com.vui.vaporwave.model.LyricLine
+import com.vui.vaporwave.model.LyricsResult
 import com.vui.vaporwave.model.PlayStat
 import com.vui.vaporwave.model.Playlist
 import com.vui.vaporwave.model.RecentAudioEntry
+import com.vui.vaporwave.model.ThemeMode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
@@ -259,25 +270,7 @@ class MusicRepository(private val context: Context) {
                 } catch (ignored: Exception) {}
             }
 
-            // Only resolvable for MediaStore-scanned tracks -- externally opened files (SAF) have
-            // no on-disk path the app is given direct access to, just the content Uri itself.
-            if (uri.scheme == "content") {
-                try {
-                    context.contentResolver.query(
-                        uri,
-                        arrayOf(MediaStore.Audio.Media.DATA),
-                        null,
-                        null,
-                        null
-                    )?.use { cursor ->
-                        if (cursor.moveToFirst()) {
-                            filePath = cursor.getString(0)
-                        }
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
+            filePath = resolveFilePath(uri)
         }
 
         ExtendedTrackMetadata(
@@ -287,6 +280,259 @@ class MusicRepository(private val context: Context) {
             albumArtist = albumArtist,
             bitrateKbps = bitrateKbps
         )
+    }
+
+    /**
+     * The real on-disk path behind a track's content Uri, via MediaStore's (deprecated but still
+     * functional) DATA column. Only resolvable for MediaStore-scanned tracks -- externally opened
+     * files (SAF) have no on-disk path the app is given direct access to, just the content Uri
+     * itself.
+     */
+    private fun resolveFilePath(uri: Uri): String? {
+        if (uri.scheme != "content") return null
+        return try {
+            context.contentResolver.query(
+                uri,
+                arrayOf(MediaStore.Audio.Media.DATA),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    /**
+     * Synced lyrics from a sibling .lrc file take priority; if none is found, falls back to
+     * unsynced lyrics embedded in the track's own tags (ID3 USLT / FLAC Vorbis comment / MP4
+     * ©lyr -- see the `data.lyrics` readers). Null means neither exists.
+     *
+     * The .lrc lookup itself has three fallbacks in order, each only reached if the previous
+     * returned nothing:
+     * 1. A direct java.io.File read (works on plenty of devices, e.g. plain Android 12+ with
+     *    READ_MEDIA_AUDIO).
+     * 2. MediaProvider itself (query MediaStore.Files by exact path, open via its content:// Uri,
+     *    scanning the file in first if it wasn't already indexed). Confirmed this alone still
+     *    isn't enough on a real device: MediaStore.Files is the *generic* files collection, not
+     *    covered by READ_MEDIA_AUDIO (which only grants the Audio-typed collection) -- opening
+     *    even a validly-resolved Uri from it throws SecurityException without further permission.
+     * 3. A user-granted SAF folder tree (see [saveLyricsTreeUri]/[loadLyricsTreeUri]), searched
+     *    for a file with the same name. This is the only one of the three that's actually
+     *    guaranteed to work under scoped storage for a non-owned, non-audio file -- the first two
+     *    are opportunistic and simply do nothing (not crash) when blocked.
+     */
+    suspend fun fetchLyrics(track: AudioTrack): LyricsResult? = withContext(Dispatchers.IO) {
+        val uri = track.contentUri
+        Log.d(LYRICS_TAG, "fetchLyrics: track=${track.title} contentUri=$uri")
+        if (uri == null) {
+            Log.d(LYRICS_TAG, "fetchLyrics: no contentUri, giving up")
+            return@withContext null
+        }
+
+        val syncedLines = fetchSyncedLyrics(uri)
+        if (syncedLines != null) return@withContext LyricsResult.Synced(syncedLines)
+
+        val embeddedText = fetchEmbeddedLyrics(uri, track.formatBadge)
+        Log.d(LYRICS_TAG, "fetchLyrics: embedded -> ${if (embeddedText != null) "${embeddedText.length} chars" else "null"}")
+        return@withContext embeddedText?.let { LyricsResult.Plain(it) }
+    }
+
+    private suspend fun fetchSyncedLyrics(uri: Uri): List<LyricLine>? {
+        val filePath = resolveFilePath(uri)
+        Log.d(LYRICS_TAG, "fetchSyncedLyrics: resolveFilePath -> $filePath")
+        if (filePath == null) return null
+        val lrcPath = filePath.substringBeforeLast('.', filePath) + ".lrc"
+        Log.d(LYRICS_TAG, "fetchSyncedLyrics: looking for lrc at $lrcPath")
+
+        val viaFile = readLrcViaFile(lrcPath)
+        Log.d(LYRICS_TAG, "fetchSyncedLyrics: readLrcViaFile -> ${if (viaFile != null) "${viaFile.length} chars" else "null"}")
+        val viaMediaStore = viaFile ?: readLrcViaMediaStore(lrcPath)
+        if (viaFile == null) {
+            Log.d(LYRICS_TAG, "fetchSyncedLyrics: readLrcViaMediaStore -> ${if (viaMediaStore != null) "${viaMediaStore.length} chars" else "null"}")
+        }
+
+        val lrcText = viaMediaStore ?: readLrcViaSafTree(lrcPath)
+        if (viaMediaStore == null) {
+            Log.d(LYRICS_TAG, "fetchSyncedLyrics: readLrcViaSafTree -> ${if (lrcText != null) "${lrcText.length} chars" else "null"}")
+        }
+
+        val result = lrcText?.let { text -> LrcParser.parse(text).takeIf { it.isNotEmpty() } }
+        Log.d(LYRICS_TAG, "fetchSyncedLyrics: parsed -> ${result?.size ?: 0} lines")
+        return result
+    }
+
+    /**
+     * Only reads a bounded prefix of the audio file rather than the whole thing -- this runs
+     * automatically on every track change (to know upfront whether the tap-to-view-lyrics gesture
+     * should do anything), so pulling a multi-hundred-MB FLAC entirely into memory just to check
+     * its tags would be wasteful. All three readers' tag structures (ID3v2 header, FLAC metadata
+     * blocks, MP4 moov) live at the start of the file for the overwhelming majority of real
+     * encoders, so this prefix comfortably covers them; the rare moov-at-the-end MP4 is a known
+     * gap, acceptable for a fallback that only matters when there's no .lrc.
+     */
+    private fun fetchEmbeddedLyrics(uri: Uri, formatBadge: String): String? {
+        val prefix = readPrefixBytes(uri, EMBEDDED_LYRICS_PREFIX_BYTES) ?: return null
+        return EmbeddedLyricsReader.read(prefix, formatBadge)
+    }
+
+    private fun readPrefixBytes(uri: Uri, maxBytes: Int): ByteArray? = try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val buffer = ByteArrayOutputStream()
+            val chunk = ByteArray(64 * 1024)
+            var totalRead = 0
+            while (totalRead < maxBytes) {
+                val toRead = minOf(chunk.size, maxBytes - totalRead)
+                val n = input.read(chunk, 0, toRead)
+                if (n <= 0) break
+                buffer.write(chunk, 0, n)
+                totalRead += n
+            }
+            buffer.toByteArray()
+        }
+    } catch (e: Exception) {
+        Log.d(LYRICS_TAG, "readPrefixBytes: threw ${e.javaClass.simpleName}: ${e.message}")
+        null
+    }
+
+    private fun readLrcViaFile(path: String): String? = try {
+        val file = File(path)
+        Log.d(LYRICS_TAG, "readLrcViaFile: exists=${file.exists()} canRead=${file.canRead()} isFile=${file.isFile}")
+        file.takeIf { it.isFile }?.readText()
+    } catch (e: Exception) {
+        Log.d(LYRICS_TAG, "readLrcViaFile: threw ${e.javaClass.simpleName}: ${e.message}")
+        null
+    }
+
+    private suspend fun readLrcViaMediaStore(path: String): String? {
+        val firstUri = queryLrcContentUri(path)
+        Log.d(LYRICS_TAG, "readLrcViaMediaStore: initial query -> $firstUri")
+        firstUri?.let { return readTextFromUri(it) }
+
+        // Not indexed yet (a .lrc dropped in after the last media scan, or an OEM scanner that
+        // skips unrecognized extensions entirely) -- ask MediaScannerConnection to index just
+        // this one file. Critically, use the Uri the scan callback hands back directly instead
+        // of re-querying: on a removable/SD-card volume, that Uri's authority is the volume's
+        // own id (e.g. "6261-6563"), not "external" -- and on API 29 (Android 10), the
+        // MediaStore.VOLUME_EXTERNAL ("external") collection only covers *primary* storage, so a
+        // re-query against it would silently miss anything the scanner just indexed on the SD
+        // card (confirmed on a Samsung Android 10 device: the scan succeeded and returned a
+        // 6261-6563-authority Uri, but a follow-up "external" query still came back empty).
+        val scannedUri = suspendCancellableCoroutine<Uri?> { continuation ->
+            MediaScannerConnection.scanFile(context, arrayOf(path), null) { _, resultUri ->
+                Log.d(LYRICS_TAG, "readLrcViaMediaStore: scanFile callback resultUri=$resultUri")
+                if (continuation.isActive) continuation.resume(resultUri)
+            }
+        }
+        scannedUri?.let { uri -> readTextFromUri(uri)?.let { return it } }
+
+        // Last resort: the initial query only checked MediaStore.VOLUME_EXTERNAL, which misses
+        // secondary volumes pre-API 30 -- try every volume MediaStore actually knows about.
+        return queryLrcContentUriAcrossVolumes(path)?.let { readTextFromUri(it) }
+    }
+
+    private fun queryLrcContentUri(path: String): Uri? = queryLrcContentUriInVolume(path, MediaStore.VOLUME_EXTERNAL)
+
+    private fun queryLrcContentUriAcrossVolumes(path: String): Uri? {
+        val volumes = try {
+            MediaStore.getExternalVolumeNames(context)
+        } catch (e: Exception) {
+            Log.d(LYRICS_TAG, "queryLrcContentUriAcrossVolumes: threw ${e.javaClass.simpleName}: ${e.message}")
+            emptySet()
+        }
+        for (volume in volumes) {
+            queryLrcContentUriInVolume(path, volume)?.let {
+                Log.d(LYRICS_TAG, "queryLrcContentUriAcrossVolumes: found in volume '$volume' -> $it")
+                return it
+            }
+        }
+        return null
+    }
+
+    private fun queryLrcContentUriInVolume(path: String, volume: String): Uri? {
+        val collection = MediaStore.Files.getContentUri(volume)
+        return try {
+            context.contentResolver.query(
+                collection,
+                arrayOf(MediaStore.Files.FileColumns._ID),
+                "${MediaStore.Files.FileColumns.DATA} = ?",
+                arrayOf(path),
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    ContentUris.withAppendedId(collection, cursor.getLong(0))
+                } else {
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(LYRICS_TAG, "queryLrcContentUriInVolume($volume): threw ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+    }
+
+    private fun readTextFromUri(uri: Uri): String? = try {
+        context.contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() }
+    } catch (e: Exception) {
+        Log.d(LYRICS_TAG, "readTextFromUri: threw ${e.javaClass.simpleName}: ${e.message}")
+        null
+    }
+
+    /**
+     * Searches a user-granted SAF folder tree (see [loadLyricsTreeUri]) for a file with the same
+     * name as [lrcPath]'s. Depth-capped rather than an unbounded walk -- the granted tree is
+     * expected to be a music folder, not the whole filesystem, but a cap keeps a pathological
+     * grant (e.g. the SD card root) from wandering forever.
+     */
+    private fun readLrcViaSafTree(lrcPath: String): String? {
+        val treeUriString = prefs.getString(KEY_LYRICS_TREE_URI, null)
+        if (treeUriString == null) {
+            Log.d(LYRICS_TAG, "readLrcViaSafTree: no folder granted yet")
+            return null
+        }
+        val root = try {
+            DocumentFile.fromTreeUri(context, Uri.parse(treeUriString))
+        } catch (e: Exception) {
+            Log.d(LYRICS_TAG, "readLrcViaSafTree: fromTreeUri threw ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+        if (root == null || !root.isDirectory) {
+            Log.d(LYRICS_TAG, "readLrcViaSafTree: granted tree is missing or not a directory")
+            return null
+        }
+
+        val targetName = File(lrcPath).name
+        val found = findFileByName(root, targetName, maxDepth = 8)
+        Log.d(LYRICS_TAG, "readLrcViaSafTree: search for '$targetName' -> ${found?.uri}")
+        return found?.uri?.let { readTextFromUri(it) }
+    }
+
+    private fun findFileByName(dir: DocumentFile, name: String, maxDepth: Int): DocumentFile? {
+        if (maxDepth < 0) return null
+        val children = try {
+            dir.listFiles()
+        } catch (e: Exception) {
+            return null
+        }
+        children.firstOrNull { !it.isDirectory && it.name == name }?.let { return it }
+        for (child in children) {
+            if (child.isDirectory) {
+                findFileByName(child, name, maxDepth - 1)?.let { return it }
+            }
+        }
+        return null
+    }
+
+    /** Null when the user has never granted a folder for lyrics access. */
+    suspend fun loadLyricsTreeUri(): Uri? = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_LYRICS_TREE_URI, null)?.let { Uri.parse(it) }
+    }
+
+    suspend fun saveLyricsTreeUri(uri: Uri) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_LYRICS_TREE_URI, uri.toString()).apply()
     }
 
     /**
@@ -411,12 +657,41 @@ class MusicRepository(private val context: Context) {
         prefs.edit().putBoolean(KEY_USE_VAPORWAVE_THEME, useVaporwave).apply()
     }
 
+    // Read-only now -- kept so loadThemeMode() can migrate a pre-ThemeMode install's prior
+    // dark/light choice instead of everyone landing on SYSTEM the first time this version runs.
     suspend fun loadUseDarkTheme(): Boolean = withContext(Dispatchers.IO) {
         prefs.getBoolean(KEY_USE_DARK_THEME, true)
     }
 
-    suspend fun saveUseDarkTheme(useDark: Boolean) = withContext(Dispatchers.IO) {
-        prefs.edit().putBoolean(KEY_USE_DARK_THEME, useDark).apply()
+    /** Null when nothing has been saved under the current ThemeMode scheme yet. */
+    suspend fun loadThemeMode(): ThemeMode? = withContext(Dispatchers.IO) {
+        prefs.getString(KEY_THEME_MODE, null)?.let { raw ->
+            try {
+                ThemeMode.valueOf(raw)
+            } catch (e: IllegalArgumentException) {
+                null
+            }
+        }
+    }
+
+    suspend fun saveThemeMode(mode: ThemeMode) = withContext(Dispatchers.IO) {
+        prefs.edit().putString(KEY_THEME_MODE, mode.name).apply()
+    }
+
+    suspend fun loadUseMaterialYou(): Boolean = withContext(Dispatchers.IO) {
+        prefs.getBoolean(KEY_USE_MATERIAL_YOU, false)
+    }
+
+    suspend fun saveUseMaterialYou(enabled: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_USE_MATERIAL_YOU, enabled).apply()
+    }
+
+    suspend fun loadUseOledBlack(): Boolean = withContext(Dispatchers.IO) {
+        prefs.getBoolean(KEY_USE_OLED_BLACK, false)
+    }
+
+    suspend fun saveUseOledBlack(enabled: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_USE_OLED_BLACK, enabled).apply()
     }
 
     suspend fun loadFavouriteIds(): Set<Long> = withContext(Dispatchers.IO) {
@@ -557,8 +832,18 @@ class MusicRepository(private val context: Context) {
         private const val KEY_RECENT_OPENED_FILES = "recent_opened_files_json"
         private const val KEY_USE_VAPORWAVE_THEME = "use_vaporwave_theme"
         private const val KEY_USE_DARK_THEME = "use_dark_theme"
+        private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_USE_MATERIAL_YOU = "use_material_you"
+        private const val KEY_USE_OLED_BLACK = "use_oled_black"
         private const val KEY_EQ_ENABLED = "eq_enabled"
         private const val KEY_EQ_BAND_GAINS = "eq_band_gains_json"
+        private const val KEY_LYRICS_TREE_URI = "lyrics_tree_uri"
+
+        // Temporary, verbose on purpose -- diagnosing why the .lrc lookup fails on some
+        // devices/OEM skins (e.g. Samsung One UI on Android 10) while working on others.
+        private const val LYRICS_TAG = "VaporwaveLyrics"
+
+        private const val EMBEDDED_LYRICS_PREFIX_BYTES = 8 * 1024 * 1024
     }
 }
 

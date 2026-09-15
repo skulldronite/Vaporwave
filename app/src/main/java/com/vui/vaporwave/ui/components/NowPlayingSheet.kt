@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.media.AudioManager
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -28,11 +29,16 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -105,6 +111,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -115,13 +122,21 @@ import androidx.core.content.ContextCompat
 import androidx.media3.common.Player
 import coil3.compose.AsyncImage
 import com.vui.vaporwave.model.AudioTrack
+import com.vui.vaporwave.model.LyricLine
+import com.vui.vaporwave.model.LyricsResult
 import com.vui.vaporwave.theme.VaporCyan
 import com.vui.vaporwave.theme.VaporMint
 import com.vui.vaporwave.theme.VaporPink
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+
+/** The lyrics tile's dark-mode background -- deliberately not any theme token, since the tile
+ *  swaps to a plain white/dark-gray pair regardless of which color scheme (Neon, Material You,
+ *  OLED, etc.) is actually active, rather than tracking any of them. */
+private val LyricsDarkBackground = Color(0xFF2A2A2A)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -131,6 +146,8 @@ fun NowPlayingSheet(
     /** Read lazily so the position tick doesn't recompose the whole sheet -- see [SeekSection]. */
     positionProvider: () -> Long,
     durationMs: Long,
+    /** Null means no lyrics (synced or embedded) for [track] -- tapping the album art does nothing. */
+    lyrics: LyricsResult?,
     playbackSpeed: Float,
     isSlowedAndReverb: Boolean,
     repeatMode: Int,
@@ -170,6 +187,10 @@ fun NowPlayingSheet(
     var isVolumeSliderVisible by remember { mutableStateOf(false) }
     var isOverflowMenuExpanded by remember { mutableStateOf(false) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
+    var showLyrics by remember { mutableStateOf(false) }
+    // Back to album art on every track change, rather than carrying "showing lyrics" over onto
+    // whatever plays next.
+    LaunchedEffect(track.id) { showLyrics = false }
 
     if (showDeleteConfirmation) {
         AlertDialog(
@@ -383,7 +404,10 @@ fun NowPlayingSheet(
                                 VaporMint.copy(alpha = 0.85f)
                             )
                         )
-                    ),
+                    )
+                    // Tapping toggles synced lyrics over the artwork -- a no-op when this track
+                    // has none, per the feature's own spec, rather than showing an empty view.
+                    .clickable(enabled = lyrics != null) { showLyrics = !showLyrics },
                 contentAlignment = Alignment.Center
             ) {
                 val artworkPlaceholder: @Composable () -> Unit = {
@@ -409,14 +433,54 @@ fun NowPlayingSheet(
                     }
                 }
 
-                artworkPlaceholder()
-                if (track.artworkUri != null) {
-                    AsyncImage(
-                        model = track.artworkUri,
-                        contentDescription = "Album Artwork",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
+                Crossfade(targetState = showLyrics && lyrics != null, label = "artwork_lyrics") { showingLyrics ->
+                    val currentLyrics = lyrics
+                    if (showingLyrics && currentLyrics != null) {
+                        // Luminance-based rather than keyed off ThemeMode/useOledBlack/etc
+                        // directly -- this reads correctly no matter which of Neon, Material You,
+                        // standard Material 3, or OLED black actually resolved the current
+                        // background, rather than needing to special-case each one here too.
+                        val isDarkSurface = MaterialTheme.colorScheme.background.luminance() < 0.5f
+                        val lyricsBackground = if (isDarkSurface) LyricsDarkBackground else Color.White
+                        val lyricsTextColor = if (isDarkSurface) Color.White else Color.Black
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(lyricsBackground)
+                        ) {
+                            when (currentLyrics) {
+                                is LyricsResult.Synced -> LyricsView(
+                                    lines = currentLyrics.lines,
+                                    positionProvider = positionProvider,
+                                    onSeekTo = onSeekTo,
+                                    textColor = lyricsTextColor,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(20.dp)
+                                )
+                                is LyricsResult.Plain -> PlainLyricsView(
+                                    text = currentLyrics.text,
+                                    textColor = lyricsTextColor,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(20.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        Box(contentAlignment = Alignment.Center) {
+                            artworkPlaceholder()
+                            if (track.artworkUri != null) {
+                                AsyncImage(
+                                    model = track.artworkUri,
+                                    contentDescription = "Album Artwork",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1016,6 +1080,84 @@ private fun VolumeLevelIcon(level: Int, tint: Color, modifier: Modifier = Modifi
                 style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
             )
         }
+    }
+}
+
+/**
+ * Synced lyrics, auto-scrolling to whichever line is current and highlighting it. Tapping any
+ * line jumps playback there. Isolated from [NowPlayingSheet] for the same reason as
+ * [SeekSection] -- this polls the playback position on its own timer rather than the sheet
+ * recomposing four times a second.
+ */
+@Composable
+private fun LyricsView(
+    lines: List<LyricLine>,
+    positionProvider: () -> Long,
+    onSeekTo: (Long) -> Unit,
+    textColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+    var activeIndex by remember(lines) { mutableIntStateOf(-1) }
+
+    // Same 250ms cadence as the rest of the app's playback-position polling (see
+    // MusicViewModel's own position ticker) -- no need to poll faster than lyric lines change.
+    LaunchedEffect(lines) {
+        while (true) {
+            val position = positionProvider()
+            // Last line whose timestamp has already passed -- i.e. the currently active one.
+            val index = lines.indexOfLast { it.timestampMs <= position }
+            if (index != activeIndex) {
+                activeIndex = index
+                if (index >= 0) {
+                    // Keeps the active line roughly centered rather than pinned to the top.
+                    listState.animateScrollToItem(index, scrollOffset = -200)
+                }
+            }
+            delay(250)
+        }
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = modifier,
+        contentPadding = PaddingValues(vertical = 96.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        itemsIndexed(lines) { index, line ->
+            val isActive = index == activeIndex
+            Text(
+                text = line.text,
+                style = if (isActive) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge,
+                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                color = textColor.copy(alpha = if (isActive) 1f else 0.6f),
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSeekTo(line.timestampMs) }
+                    .padding(vertical = 10.dp, horizontal = 8.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Embedded, unsynced lyrics -- just a static scrollable block. No per-line timestamps means no
+ * auto-scroll and nothing to seek to, unlike [LyricsView].
+ */
+@Composable
+private fun PlainLyricsView(text: String, textColor: Color, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier.verticalScroll(rememberScrollState()),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            color = textColor,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(vertical = 32.dp)
+        )
     }
 }
 

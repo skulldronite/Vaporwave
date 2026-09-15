@@ -33,6 +33,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -83,6 +84,7 @@ import java.util.Locale
 import com.vui.vaporwave.data.tagging.MetadataFields
 import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.model.ExtendedTrackMetadata
+import com.vui.vaporwave.model.ThemeMode
 import com.vui.vaporwave.theme.VaporwaveTheme
 import com.vui.vaporwave.ui.AppDestination
 import com.vui.vaporwave.ui.LibraryDetail
@@ -130,11 +132,21 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val useVaporwaveTheme by viewModel.useVaporwaveTheme.collectAsStateWithLifecycle()
-            val useDarkTheme by viewModel.useDarkTheme.collectAsStateWithLifecycle()
+            val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+            val useMaterialYou by viewModel.useMaterialYou.collectAsStateWithLifecycle()
+            val useOledBlack by viewModel.useOledBlack.collectAsStateWithLifecycle()
+            val systemInDarkTheme = isSystemInDarkTheme()
+            val effectiveDarkTheme = when (themeMode) {
+                ThemeMode.SYSTEM -> systemInDarkTheme
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+            }
 
             VaporwaveTheme(
-                darkTheme = useDarkTheme,
-                useDynamicColor = !useVaporwaveTheme
+                darkTheme = effectiveDarkTheme,
+                useVaporwaveTheme = useVaporwaveTheme,
+                useDynamicColor = useMaterialYou,
+                useOledBlack = useOledBlack
             ) {
                 // Fills the whole window with the theme's background first, so both the
                 // reachability pull's reveal gap and any pre-composition frame show the
@@ -254,6 +266,18 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // One-time folder grant for reading sibling .lrc lyric files -- see MusicRepository's
+        // fetchLyrics SAF fallback for why this exists (scoped storage blocks direct/MediaStore
+        // access to a non-owned, non-audio file on some devices).
+        val lyricsFolderLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocumentTree()
+        ) { uri: Uri? ->
+            uri?.let {
+                takePersistableReadPermission(it)
+                viewModel.setLyricsTreeUri(it)
+            }
+        }
+
         LaunchedEffect(Unit) {
             openDocumentCallback = {
                 filePickerLauncher.launch(arrayOf("audio/*"))
@@ -273,6 +297,7 @@ class MainActivity : ComponentActivity() {
         val context = LocalContext.current
         val destination by viewModel.currentDestination.collectAsStateWithLifecycle()
         val currentTrack by viewModel.currentTrack.collectAsStateWithLifecycle()
+        val lyrics by viewModel.lyrics.collectAsStateWithLifecycle()
         val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
         // Deliberately NOT read with `by` here. The position ticks four times a second, and
         // reading it in this function's body would invalidate the whole screen at that rate.
@@ -285,6 +310,7 @@ class MainActivity : ComponentActivity() {
         val isSlowedAndReverb by viewModel.isSlowedAndReverb.collectAsStateWithLifecycle()
         val isEqEnabled by viewModel.isEqEnabled.collectAsStateWithLifecycle()
         val eqBandGains by viewModel.eqBandGains.collectAsStateWithLifecycle()
+        val lyricsTreeUri by viewModel.lyricsTreeUri.collectAsStateWithLifecycle()
         val repeatMode by viewModel.repeatMode.collectAsStateWithLifecycle()
         val isShuffle by viewModel.isShuffleEnabled.collectAsStateWithLifecycle()
         val isNowPlayingExpanded by viewModel.isNowPlayingExpanded.collectAsStateWithLifecycle()
@@ -295,7 +321,14 @@ class MainActivity : ComponentActivity() {
         val tracks by viewModel.filteredTracks.collectAsStateWithLifecycle()
         val allTracks by viewModel.allTracks.collectAsStateWithLifecycle()
         val useVaporwaveTheme by viewModel.useVaporwaveTheme.collectAsStateWithLifecycle()
-        val useDarkTheme by viewModel.useDarkTheme.collectAsStateWithLifecycle()
+        val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+        val useMaterialYou by viewModel.useMaterialYou.collectAsStateWithLifecycle()
+        val useOledBlack by viewModel.useOledBlack.collectAsStateWithLifecycle()
+        val isEffectivelyDark = when (themeMode) {
+            ThemeMode.SYSTEM -> isSystemInDarkTheme()
+            ThemeMode.LIGHT -> false
+            ThemeMode.DARK -> true
+        }
         val favouriteTrackIds by viewModel.favouriteTrackIds.collectAsStateWithLifecycle()
         val favouriteTracks by viewModel.favouriteTracks.collectAsStateWithLifecycle()
         val albums by viewModel.albums.collectAsStateWithLifecycle()
@@ -608,10 +641,17 @@ class MainActivity : ComponentActivity() {
                         onSetEqualizer = { _, _ -> }
                     )
                     SettingsScreen(
+                        themeMode = themeMode,
+                        onSetThemeMode = {},
                         useVaporwaveTheme = useVaporwaveTheme,
-                        onToggleTheme = {},
-                        useDarkTheme = useDarkTheme,
-                        onToggleDarkTheme = {},
+                        onToggleVaporwaveTheme = {},
+                        useMaterialYou = useMaterialYou,
+                        onToggleMaterialYou = {},
+                        useOledBlack = useOledBlack,
+                        onToggleOledBlack = {},
+                        isEffectivelyDark = isEffectivelyDark,
+                        hasLyricsFolderAccess = lyricsTreeUri != null,
+                        onGrantLyricsFolderAccess = {},
                         onRescanLibrary = {}
                     )
                 }
@@ -706,10 +746,17 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 SettingsScreen(
+                                    themeMode = themeMode,
+                                    onSetThemeMode = { viewModel.setThemeMode(it) },
                                     useVaporwaveTheme = useVaporwaveTheme,
-                                    onToggleTheme = { viewModel.setUseVaporwaveTheme(it) },
-                                    useDarkTheme = useDarkTheme,
-                                    onToggleDarkTheme = { viewModel.setUseDarkTheme(it) },
+                                    onToggleVaporwaveTheme = { viewModel.setUseVaporwaveTheme(it) },
+                                    useMaterialYou = useMaterialYou,
+                                    onToggleMaterialYou = { viewModel.setUseMaterialYou(it) },
+                                    useOledBlack = useOledBlack,
+                                    onToggleOledBlack = { viewModel.setUseOledBlack(it) },
+                                    isEffectivelyDark = isEffectivelyDark,
+                                    hasLyricsFolderAccess = lyricsTreeUri != null,
+                                    onGrantLyricsFolderAccess = { lyricsFolderLauncher.launch(null) },
                                     onRescanLibrary = { viewModel.loadTracks(force = true) }
                                 )
                             }
@@ -1149,6 +1196,7 @@ class MainActivity : ComponentActivity() {
                 isPlaying = isPlaying,
                 positionProvider = { playbackPositionState.value },
                 durationMs = duration,
+                lyrics = lyrics,
                 playbackSpeed = playbackSpeed,
                 isSlowedAndReverb = isSlowedAndReverb,
                 repeatMode = repeatMode,

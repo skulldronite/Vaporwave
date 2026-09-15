@@ -10,8 +10,8 @@ android {
         applicationId = "com.vui.vaporwave"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.3.4"
+        versionCode = 2
+        versionName = "1.4.3"
     }
 
     buildTypes {
@@ -63,6 +63,10 @@ dependencies {
   implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.activity.compose)
+  // SAF folder access for reading sibling .lrc lyric files -- scoped storage blocks direct
+  // File/MediaStore access to non-owned, non-audio files on some devices (see MusicRepository's
+  // fetchLyrics), so this is the reliable fallback.
+  implementation(libs.androidx.documentfile)
 
   // Arch Components
   implementation(libs.androidx.lifecycle.runtime.compose)
