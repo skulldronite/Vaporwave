@@ -11,6 +11,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- android.media.audiofx.Equalizer (in-app equalizer) can require this on some OS
+         versions/OEM audio stacks, particularly for the capabilities-only query instance
+         attached to session 0 (EffectsScreen's EqualizerCard) rather than a real playback
+         session. It's a normal (install-time, non-dangerous) permission, no runtime prompt. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <application
         android:name=".VaporwaveApplication"

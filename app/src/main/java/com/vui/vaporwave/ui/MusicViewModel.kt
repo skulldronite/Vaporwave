@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.ComponentName
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.result.IntentSenderRequest
@@ -14,6 +15,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.vui.vaporwave.data.MusicRepository
 import com.vui.vaporwave.data.TrackDeleteResult
@@ -120,6 +122,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isSlowedAndReverb = MutableStateFlow(false)
     val isSlowedAndReverb: StateFlow<Boolean> = _isSlowedAndReverb.asStateFlow()
+
+    // The real android.media.audiofx.Equalizer lives in VaporwavePlaybackService (it has to --
+    // see that file's comment), so these two just mirror the last enabled/gain state requested
+    // and are sent across to the service via a custom session command in setEqualizer().
+    private val _isEqEnabled = MutableStateFlow(false)
+    val isEqEnabled: StateFlow<Boolean> = _isEqEnabled.asStateFlow()
+
+    // Empty until either a saved value loads or the UI (which is the only side that knows the
+    // device's real band count) sets an initial flat curve.
+    private val _eqBandGains = MutableStateFlow<List<Float>>(emptyList())
+    val eqBandGains: StateFlow<List<Float>> = _eqBandGains.asStateFlow()
 
     private val _repeatMode = MutableStateFlow(Player.REPEAT_MODE_OFF)
     val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
@@ -298,6 +311,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _recentlyOpenedFiles.value = repository.loadRecentlyOpenedFiles()
             _useVaporwaveTheme.value = repository.loadUseVaporwaveTheme()
             _useDarkTheme.value = repository.loadUseDarkTheme()
+            _isEqEnabled.value = repository.loadEqEnabled()
+            repository.loadEqBandGains()?.let { _eqBandGains.value = it }
+            sendEqualizerStateToService()
             // Play stats and the scanned library (loadTracks, running concurrently) can finish in
             // either order -- try the restore from whichever lands second.
             restoreLastPlayedTrackIfNeeded()
@@ -330,6 +346,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 val controller = future.get()
                 mediaController = controller
                 setupPlayerListener(controller)
+                // The service's own in-memory equalizer state resets to defaults whenever its
+                // process is (re)created, independent of loadPersistedState()'s own timing --
+                // reapplying here covers a fresh/restarted service reconnecting after the
+                // persisted state was already loaded.
+                sendEqualizerStateToService()
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -739,6 +760,25 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun setUseDarkTheme(useDark: Boolean) {
         _useDarkTheme.value = useDark
         viewModelScope.launch { repository.saveUseDarkTheme(useDark) }
+    }
+
+    fun setEqualizer(enabled: Boolean, gains: List<Float>) {
+        _isEqEnabled.value = enabled
+        _eqBandGains.value = gains
+        viewModelScope.launch {
+            repository.saveEqEnabled(enabled)
+            repository.saveEqBandGains(gains)
+        }
+        sendEqualizerStateToService()
+    }
+
+    private fun sendEqualizerStateToService() {
+        val controller = mediaController ?: return
+        val args = Bundle().apply {
+            putBoolean(VaporwavePlaybackService.EXTRA_EQ_ENABLED, _isEqEnabled.value)
+            putFloatArray(VaporwavePlaybackService.EXTRA_EQ_GAINS, _eqBandGains.value.toFloatArray())
+        }
+        controller.sendCustomCommand(SessionCommand(VaporwavePlaybackService.COMMAND_EQ_APPLY, Bundle.EMPTY), args)
     }
 
     fun toggleFavourite(trackId: Long) {

@@ -283,6 +283,8 @@ class MainActivity : ComponentActivity() {
         val playbackSpeed by viewModel.playbackSpeed.collectAsStateWithLifecycle()
         val playbackPitch by viewModel.playbackPitch.collectAsStateWithLifecycle()
         val isSlowedAndReverb by viewModel.isSlowedAndReverb.collectAsStateWithLifecycle()
+        val isEqEnabled by viewModel.isEqEnabled.collectAsStateWithLifecycle()
+        val eqBandGains by viewModel.eqBandGains.collectAsStateWithLifecycle()
         val repeatMode by viewModel.repeatMode.collectAsStateWithLifecycle()
         val isShuffle by viewModel.isShuffleEnabled.collectAsStateWithLifecycle()
         val isNowPlayingExpanded by viewModel.isNowPlayingExpanded.collectAsStateWithLifecycle()
@@ -600,7 +602,10 @@ class MainActivity : ComponentActivity() {
                         currentSpeed = playbackSpeed,
                         currentPitch = playbackPitch,
                         isSlowedAndReverb = isSlowedAndReverb,
-                        onSetSpeedAndPitch = { _, _ -> }
+                        onSetSpeedAndPitch = { _, _ -> },
+                        isEqEnabled = isEqEnabled,
+                        eqBandGains = eqBandGains,
+                        onSetEqualizer = { _, _ -> }
                     )
                     SettingsScreen(
                         useVaporwaveTheme = useVaporwaveTheme,
@@ -686,7 +691,10 @@ class MainActivity : ComponentActivity() {
                                     currentSpeed = playbackSpeed,
                                     currentPitch = playbackPitch,
                                     isSlowedAndReverb = isSlowedAndReverb,
-                                    onSetSpeedAndPitch = { speed, pitch -> viewModel.setSpeedAndPitch(speed, pitch) }
+                                    onSetSpeedAndPitch = { speed, pitch -> viewModel.setSpeedAndPitch(speed, pitch) },
+                                    isEqEnabled = isEqEnabled,
+                                    eqBandGains = eqBandGains,
+                                    onSetEqualizer = { enabled, gains -> viewModel.setEqualizer(enabled, gains) }
                                 )
                             }
                         }
