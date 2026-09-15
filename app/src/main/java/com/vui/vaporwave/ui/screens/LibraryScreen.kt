@@ -166,6 +166,7 @@ fun LibraryScreen(
     // return, instead of each tab/destination silently starting over from zero.
     reachabilityPullProgress: Float = 0f,
     onPullProgressChanged: (Float) -> Unit = {},
+    isReachabilityLocked: Boolean = false,
     // One-shot signal (bump to request, any distinct value) rather than a plain "target tab"
     // value: see the effect below for why a request needs to be its own channel, separate from
     // currentTab, instead of just comparing currentTab against the pager's position.
@@ -231,6 +232,7 @@ fun LibraryScreen(
                 pullProgress = reachabilityPullProgress,
                 onPullProgressChanged = onPullProgressChanged,
                 isPagerScrollInProgress = { pagerState.isScrollInProgress },
+                isLocked = isReachabilityLocked,
                 modifier = Modifier.fillMaxSize()
             ) {
             when (tabs[page]) {

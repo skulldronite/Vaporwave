@@ -343,6 +343,11 @@ class MainActivity : ComponentActivity() {
         // which is its own recomposition scope, so a drag/settle frame only ever re-walks the
         // spacer + top bar.
         val pullProgressState = remember { mutableFloatStateOf(0f) }
+        // Separate from pullProgressState itself -- a plain gesture-opened pull also settles to
+        // exactly 1f, so deriving "locked" from pullProgress >= 1f (an earlier version of this)
+        // made every gesture-opened pull un-closable by scrolling too, not just this toggle's.
+        // Only this flag, not the pull amount, decides whether scrolling is allowed to retract it.
+        var isOneHandedModeLocked by remember { mutableStateOf(false) }
         val density = LocalDensity.current
         val maxPullPx = with(density) { 96.dp.toPx() }
 
@@ -561,6 +566,7 @@ class MainActivity : ComponentActivity() {
                         progress = progressProvider,
                         onPlayPauseClick = { viewModel.togglePlayPause() },
                         onSkipNextClick = { viewModel.skipToNext() },
+                        onSkipPreviousClick = { viewModel.skipToPrevious() },
                         onExpandClick = { viewModel.setNowPlayingExpanded(true) },
                         onDragDelta = { delta -> dragSheetBy(delta) },
                         onDragStopped = { velocity -> settleSheet(velocity) }
@@ -647,6 +653,7 @@ class MainActivity : ComponentActivity() {
                                 onOpenTrackDetails = { track -> viewModel.openTrackDetails(track) },
                                 reachabilityPullProgress = pullProgressState.floatValue,
                                 onPullProgressChanged = { pullProgressState.floatValue = it },
+                                isReachabilityLocked = isOneHandedModeLocked,
                                 scrollToTracksSignal = tracksJumpSignal
                             )
                         }
@@ -657,6 +664,7 @@ class MainActivity : ComponentActivity() {
                             ReachabilityPullBox(
                                 pullProgress = pullProgressState.floatValue,
                                 onPullProgressChanged = { pullProgressState.floatValue = it },
+                                isLocked = isOneHandedModeLocked,
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 FilesScreen(
@@ -671,6 +679,7 @@ class MainActivity : ComponentActivity() {
                             ReachabilityPullBox(
                                 pullProgress = pullProgressState.floatValue,
                                 onPullProgressChanged = { pullProgressState.floatValue = it },
+                                isLocked = isOneHandedModeLocked,
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 EffectsScreen(
@@ -685,6 +694,7 @@ class MainActivity : ComponentActivity() {
                             ReachabilityPullBox(
                                 pullProgress = pullProgressState.floatValue,
                                 onPullProgressChanged = { pullProgressState.floatValue = it },
+                                isLocked = isOneHandedModeLocked,
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 SettingsScreen(
@@ -746,6 +756,7 @@ class MainActivity : ComponentActivity() {
                 onBack = { viewModel.closeSearch() },
                 onPlayPauseClick = { viewModel.togglePlayPause() },
                 onSkipNextClick = { viewModel.skipToNext() },
+                onSkipPreviousClick = { viewModel.skipToPrevious() },
                 onExpandNowPlaying = { viewModel.setNowPlayingExpanded(true) },
                 onNowPlayingDragDelta = { delta -> dragSheetBy(delta) },
                 onNowPlayingDragStopped = { velocity -> settleSheet(velocity) }
@@ -991,6 +1002,7 @@ class MainActivity : ComponentActivity() {
                                 progress = progressProvider,
                                 onPlayPauseClick = { viewModel.togglePlayPause() },
                                 onSkipNextClick = { viewModel.skipToNext() },
+                                onSkipPreviousClick = { viewModel.skipToPrevious() },
                                 onExpandClick = { viewModel.setNowPlayingExpanded(true) },
                                 onDragDelta = { delta -> dragSheetBy(delta) },
                                 onDragStopped = { velocity -> settleSheet(velocity) },
@@ -1136,6 +1148,12 @@ class MainActivity : ComponentActivity() {
                 isFavourite = currentTrack?.id in favouriteTrackIds,
                 onToggleFavourite = { currentTrack?.let { viewModel.toggleFavourite(it.id) } },
                 onAddToPlaylist = { currentTrack?.let { viewModel.openPlaylistPicker(it) } },
+                isOneHandedModeEnabled = isOneHandedModeLocked,
+                onToggleOneHandedMode = {
+                    val newLocked = !isOneHandedModeLocked
+                    isOneHandedModeLocked = newLocked
+                    pullProgressState.floatValue = if (newLocked) 1f else 0f
+                },
                 onDismiss = { viewModel.setNowPlayingExpanded(false) },
                 onPlayPause = { viewModel.togglePlayPause() },
                 onSeekTo = { viewModel.seekTo(it) },

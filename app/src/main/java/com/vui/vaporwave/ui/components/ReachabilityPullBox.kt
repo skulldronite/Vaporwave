@@ -38,6 +38,11 @@ import androidx.compose.ui.unit.dp
  * [isPagerScrollInProgress] lets a caller that hosts its own horizontal pager (LibraryScreen's
  * tab swiper) suppress this gesture while that pager's own swipe/settle animation is running --
  * irrelevant (defaults to never-scrolling) for callers with no pager of their own.
+ *
+ * [isLocked] forces the pull to stay fully open regardless of scrolling -- set when the pull was
+ * opened via the Now Playing sheet's one-handed mode toggle rather than the pull gesture itself,
+ * so a locked-open pull behaves like a deliberate mode switch (only the same toggle closes it)
+ * instead of the usual "scroll away and it retracts" gesture behaviour.
  */
 @Composable
 fun ReachabilityPullBox(
@@ -45,6 +50,7 @@ fun ReachabilityPullBox(
     onPullProgressChanged: (Float) -> Unit,
     modifier: Modifier = Modifier,
     isPagerScrollInProgress: () -> Boolean = { false },
+    isLocked: Boolean = false,
     content: @Composable BoxScope.() -> Unit
 ) {
     val reachabilityMaxPullPx = with(LocalDensity.current) { 96.dp.toPx() }
@@ -61,6 +67,7 @@ fun ReachabilityPullBox(
     val currentPullPx by rememberUpdatedState(pullProgress * reachabilityMaxPullPx)
     val currentOnPullProgressChanged by rememberUpdatedState(onPullProgressChanged)
     val currentIsPagerScrollInProgress by rememberUpdatedState(isPagerScrollInProgress)
+    val currentIsLocked by rememberUpdatedState(isLocked)
 
     // Shared by both ways of ending a pull gesture (single-finger fling at the top, and the
     // two-finger drag below): snap open once pulled past 30% of the max, otherwise spring back.
@@ -92,7 +99,7 @@ fun ReachabilityPullBox(
                 // Never touch the pull while a horizontal page swipe is in progress -- doing so
                 // was fighting the pager's own gesture handling and breaking its transitions.
                 if (currentIsPagerScrollInProgress()) return Offset.Zero
-                if (pullOpenedByTwoFingerGesture) return Offset.Zero
+                if (pullOpenedByTwoFingerGesture || currentIsLocked) return Offset.Zero
                 val current = currentPullPx
                 if (current <= 0f || available.y >= 0f) return Offset.Zero
                 val newPull = (current + available.y).coerceAtLeast(0f)
