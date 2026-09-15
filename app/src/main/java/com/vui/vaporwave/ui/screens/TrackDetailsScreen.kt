@@ -145,7 +145,8 @@ fun TrackDetailsScreen(
                 "Track Length" to track.formattedDuration,
                 "Recording Date" to (extended?.recordingDate?.takeIf { it.isNotBlank() } ?: "Unknown"),
                 "Track Number" to trackNumberText,
-                "Format" to formatWithBitrate(track, extended),
+                "Format" to formatOnly(track),
+                "Bitrate" to formatBitrateRow(track, extended),
                 "Size of File" to formatFileSize(track.sizeBytes),
                 "Path of Storage" to (extended?.filePath ?: track.contentUri?.toString() ?: "Unknown")
             )
@@ -178,14 +179,30 @@ private fun DetailRow(label: String, value: String) {
 }
 
 /**
- * track.technicalDetails already appends bitrate when AudioTrack.bitrateKbps is known, but the
- * eager library scan never populates it (see MusicRepository.scanLocalTracks) -- only the on
- * demand fetch behind Track Details does. Falls back to that fetched value here instead.
+ * Format badge + bit depth only -- sample rate and bitrate live in their own "Bitrate" row now,
+ * so unlike track.technicalDetails (which folds all of that together), this deliberately leaves
+ * both out.
  */
-private fun formatWithBitrate(track: AudioTrack, extended: ExtendedTrackMetadata?): String {
-    if (track.bitrateKbps > 0) return track.technicalDetails
-    val fetchedBitrate = extended?.bitrateKbps ?: 0
-    return if (fetchedBitrate > 0) "${track.technicalDetails} · ${fetchedBitrate} kbps" else track.technicalDetails
+private fun formatOnly(track: AudioTrack): String {
+    val parts = mutableListOf(track.formatBadge)
+    if (track.bitDepth > 16) {
+        parts.add("${track.bitDepth}-bit")
+    }
+    return parts.joinToString(" · ")
+}
+
+/**
+ * Standalone bitrate-then-sample-rate row, separate from formatWithBitrate above (which folds
+ * bitrate into the combined Format string) -- same fallback chain (scanned value first, then the
+ * on-demand fetch behind Track Details) for bitrate, plus the sample rate on its own.
+ */
+private fun formatBitrateRow(track: AudioTrack, extended: ExtendedTrackMetadata?): String {
+    val bitrateKbps = track.bitrateKbps.takeIf { it > 0 } ?: extended?.bitrateKbps?.takeIf { it > 0 }
+    val sampleRateKhz = track.sampleRateHz.takeIf { it > 0 }?.let { it / 1000f }
+    return listOfNotNull(
+        bitrateKbps?.let { "$it kbps" },
+        sampleRateKhz?.let { khz -> if (khz == khz.toInt().toFloat()) "${khz.toInt()} kHz" else "%.1f kHz".format(khz) }
+    ).joinToString(" · ").ifBlank { "Unknown" }
 }
 
 private fun formatFileSize(sizeBytes: Long): String {

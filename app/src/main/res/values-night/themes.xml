@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Dark counterpart to values/themes.xml. See that file's comment for why this can only
+         react to the system's own night state, not the app's in-app ThemeMode. Matches
+         VaporwaveDarkColorScheme's background (VaporVoid, #0B0813). -->
+    <style name="Theme.Vaporwave" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF0B0813</item>
+    </style>
+</resources>

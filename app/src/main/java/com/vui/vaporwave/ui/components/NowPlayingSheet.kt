@@ -60,7 +60,6 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Info
@@ -100,10 +99,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -131,10 +132,13 @@ import com.vui.vaporwave.theme.VaporCyan
 import com.vui.vaporwave.theme.VaporMint
 import com.vui.vaporwave.theme.VaporPink
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Locale
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** The lyrics tile's dark-mode background -- deliberately not any theme token, since the tile
  *  swaps to a plain white/dark-gray pair regardless of which color scheme (Neon, Material You,
@@ -261,10 +265,14 @@ fun NowPlayingSheet(
                     }
 
                     IconButton(onClick = onOpenEffects) {
-                        Icon(
-                            imageVector = Icons.Default.Equalizer,
-                            contentDescription = "Equalizer",
-                            tint = if (isSlowedAndReverb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        PlaybackVisualizerIcon(
+                            isPlaying = isPlaying,
+                            playbackSpeed = playbackSpeed,
+                            tint = if (isSlowedAndReverb || isNightcoreSpeed(playbackSpeed)) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
                         )
                     }
 
@@ -504,6 +512,19 @@ fun NowPlayingSheet(
                             }
                         }
                     }
+                }
+
+                if (lyrics != null && !showLyrics) {
+                    Text(
+                        text = if (lyrics is LyricsResult.Synced) "Synced Lyrics" else "Lyrics",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(10.dp)
+                            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
                 }
             }
 
@@ -1057,6 +1078,96 @@ private fun RepeatModeIcon(repeatMode: Int, tint: Color) {
         )
     }
 }
+
+/** Matches the Nightcore preset's own speed -- see the Nightcore preset pill's onClick. */
+private fun isNightcoreSpeed(playbackSpeed: Float): Boolean = abs(playbackSpeed - 1.25f) < 0.01f
+
+/**
+ * A 5-bar visualizer, hand-drawn like [VolumeLevelIcon] below rather than Material's static
+ * Equalizer glyph -- this one actually animates with playback instead of just changing tint.
+ * Bars are bottom-anchored (only their top edge moves), and bar motion speed follows whichever
+ * speed mode is active (slower while Slowed, faster while Nightcore). Pausing doesn't freeze the
+ * bars mid-motion -- it eases them into a fixed "standby" arch shape (quarter/half/max/half/
+ * quarter), and resuming eases back out of it into live motion -- see [standbyBlend] below.
+ */
+@Composable
+private fun PlaybackVisualizerIcon(
+    isPlaying: Boolean,
+    playbackSpeed: Float,
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    val targetSpeedMultiplier = when {
+        playbackSpeed < 0.99f -> 0.4f
+        isNightcoreSpeed(playbackSpeed) -> 1.6f
+        else -> 1f
+    }
+    // Animating the multiplier itself (rather than jumping straight to it) is what makes a mode
+    // switch read as the visualizer naturally speeding up or slowing down instead of snapping --
+    // the frame loop below always reads its current (in-between) value on every frame.
+    val speedMultiplier by animateFloatAsState(
+        targetValue = targetSpeedMultiplier,
+        animationSpec = tween(durationMillis = 1920, easing = FastOutSlowInEasing),
+        label = "visualizerSpeed"
+    )
+    val phase = remember { mutableFloatStateOf(0f) }
+    // 0 = fully live (sine-driven) motion, 1 = fully the fixed standby arch. Not reset on every
+    // isPlaying flip -- Animatable.animateTo always eases from whatever value it's currently at,
+    // which is what makes both the pause-in and resume-out transitions smooth instead of an
+    // instant cut to/from the standby shape.
+    val standbyBlend = remember { Animatable(0f) }
+
+    LaunchedEffect(isPlaying) {
+        if (isPlaying) {
+            launch { standbyBlend.animateTo(0f, animationSpec = tween(1120, easing = FastOutSlowInEasing)) }
+            var lastFrameTimeNanos = 0L
+            while (isActive) {
+                withFrameNanos { frameTimeNanos ->
+                    if (lastFrameTimeNanos != 0L) {
+                        val deltaSeconds = (frameTimeNanos - lastFrameTimeNanos) / 1_000_000_000f
+                        phase.floatValue += deltaSeconds * speedMultiplier * VISUALIZER_BASE_CYCLES_PER_SECOND
+                    }
+                    lastFrameTimeNanos = frameTimeNanos
+                }
+            }
+        } else {
+            // phase itself is simply left alone here (the frame loop above isn't running), so
+            // the live shape this eases away from is whatever it last was, not reset to zero.
+            standbyBlend.animateTo(1f, animationSpec = tween(1120, easing = FastOutSlowInEasing))
+        }
+    }
+
+    Canvas(modifier = modifier.size(20.dp)) {
+        val barCount = 5
+        val barWidth = size.width * 0.12f
+        val gap = (size.width - barWidth * barCount) / (barCount - 1)
+        val minHeightFraction = 0.22f
+        val maxHeightFraction = 0.95f
+        for (i in 0 until barCount) {
+            // Each bar offset by its own slice of a cycle so they undulate across the icon like
+            // a real equalizer rather than all bouncing perfectly in sync.
+            val cycles = phase.floatValue + i * 0.15f
+            val amplitude = abs(sin(cycles * 2f * PI.toFloat()))
+            val liveFraction = minHeightFraction + (maxHeightFraction - minHeightFraction) * amplitude
+            val heightFraction = liveFraction + (VISUALIZER_STANDBY_FRACTIONS[i] - liveFraction) * standbyBlend.value
+            val barHeight = size.height * heightFraction
+            val x = i * (barWidth + gap)
+            // Bottom-anchored: only the top edge moves with barHeight, the bottom edge always
+            // sits flush against the icon's own bottom edge.
+            drawRoundRect(
+                color = tint,
+                topLeft = Offset(x, size.height - barHeight),
+                size = Size(barWidth, barHeight),
+                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
+            )
+        }
+    }
+}
+
+private const val VISUALIZER_BASE_CYCLES_PER_SECOND = 0.4375f
+
+/** Standby arch shown while paused: 1/3 / 3/4 / max / 3/4 / 1/3, as fractions of the icon's full height. */
+private val VISUALIZER_STANDBY_FRACTIONS = listOf(1f / 3f, 0.75f, 1f, 0.75f, 1f / 3f)
 
 /**
  * A speaker glyph with 1, 2, or 3 bars, hand-drawn rather than picked from Material's icon set --

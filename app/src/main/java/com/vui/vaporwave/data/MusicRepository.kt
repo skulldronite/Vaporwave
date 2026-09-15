@@ -558,6 +558,19 @@ class MusicRepository(private val context: Context) {
             context.contentResolver.openFileDescriptor(uri, "rwt")?.use { pfd ->
                 java.io.FileOutputStream(pfd.fileDescriptor).use { it.write(rewritten) }
             } ?: return@withContext TagSaveResult.Failure("${track.title}: couldn't open file for writing")
+            // The rewrite above only touches the raw bytes -- MediaStore's cached row (title,
+            // artist, album, etc.) and other apps' views of the file stay stale until something
+            // tells the scanner to re-index it, so force that now rather than waiting on a full
+            // library rescan. Must be awaited: scanFile is async, and the caller's follow-up
+            // loadTracks(force = true) would otherwise race it and re-query MediaStore before the
+            // scan actually lands, reloading the same stale row it was meant to fix.
+            resolveFilePath(uri)?.let { path ->
+                suspendCancellableCoroutine<Unit> { continuation ->
+                    MediaScannerConnection.scanFile(context, arrayOf(path), null) { _, _ ->
+                        if (continuation.isActive) continuation.resume(Unit)
+                    }
+                }
+            }
             TagSaveResult.Success
         } catch (e: android.app.RecoverableSecurityException) {
             TagSaveResult.NeedsPermission(e.userAction.actionIntent.intentSender)
@@ -650,27 +663,57 @@ class MusicRepository(private val context: Context) {
     }
 
     suspend fun loadUseVaporwaveTheme(): Boolean = withContext(Dispatchers.IO) {
-        prefs.getBoolean(KEY_USE_VAPORWAVE_THEME, true)
+        useVaporwaveThemeSync()
     }
 
     suspend fun saveUseVaporwaveTheme(useVaporwave: Boolean) = withContext(Dispatchers.IO) {
         prefs.edit().putBoolean(KEY_USE_VAPORWAVE_THEME, useVaporwave).apply()
     }
 
-    // Read-only now -- kept so loadThemeMode() can migrate a pre-ThemeMode install's prior
-    // dark/light choice instead of everyone landing on SYSTEM the first time this version runs.
+    /**
+     * Synchronous, non-suspend read -- same reasoning as skipSplashScreenSync below: the theme
+     * this app launches in has to be decided at MusicViewModel's own construction (seeding its
+     * StateFlow's initial value), which happens before setContent's first composition and well
+     * before the ViewModel's usual async settings load would otherwise resolve it. Without this,
+     * that first composition briefly rendered the StateFlow's hardcoded compile-time default
+     * (Neon on, dark) regardless of what the user actually had saved, showing as a flash of the
+     * wrong theme for a frame or two right at launch.
+     */
+    fun useVaporwaveThemeSync(): Boolean = prefs.getBoolean(KEY_USE_VAPORWAVE_THEME, false)
+
+    // Read-only now -- kept so loadThemeMode()/themeModeSync() can migrate a pre-ThemeMode
+    // install's prior dark/light choice instead of everyone landing on SYSTEM the first time
+    // this version runs.
     suspend fun loadUseDarkTheme(): Boolean = withContext(Dispatchers.IO) {
         prefs.getBoolean(KEY_USE_DARK_THEME, true)
     }
 
-    /** Null when nothing has been saved under the current ThemeMode scheme yet. */
-    suspend fun loadThemeMode(): ThemeMode? = withContext(Dispatchers.IO) {
+    suspend fun loadThemeMode(): ThemeMode = withContext(Dispatchers.IO) {
+        themeModeSync()
+    }
+
+    /**
+     * Synchronous, non-suspend read -- see useVaporwaveThemeSync's doc above for why; same
+     * launch-flash reasoning applies here too, and to the same degree (dark/light and Neon
+     * on/off are both decided together for that very first frame).
+     *
+     * Always resolves to a concrete mode, migrating an older pre-ThemeMode install's saved
+     * dark/light boolean if that's all that's there -- but a genuinely fresh install (where
+     * KEY_USE_DARK_THEME was never written either, not just defaulted) lands on SYSTEM rather
+     * than silently inheriting that boolean's own default of "dark."
+     */
+    fun themeModeSync(): ThemeMode {
         prefs.getString(KEY_THEME_MODE, null)?.let { raw ->
             try {
-                ThemeMode.valueOf(raw)
+                return ThemeMode.valueOf(raw)
             } catch (e: IllegalArgumentException) {
-                null
+                // Fall through to the fresh-install/migration logic below.
             }
+        }
+        return if (prefs.contains(KEY_USE_DARK_THEME)) {
+            if (prefs.getBoolean(KEY_USE_DARK_THEME, true)) ThemeMode.DARK else ThemeMode.LIGHT
+        } else {
+            ThemeMode.SYSTEM
         }
     }
 
@@ -687,12 +730,32 @@ class MusicRepository(private val context: Context) {
     }
 
     suspend fun loadUseOledBlack(): Boolean = withContext(Dispatchers.IO) {
-        prefs.getBoolean(KEY_USE_OLED_BLACK, false)
+        useOledBlackSync()
     }
 
     suspend fun saveUseOledBlack(enabled: Boolean) = withContext(Dispatchers.IO) {
         prefs.edit().putBoolean(KEY_USE_OLED_BLACK, enabled).apply()
     }
+
+    /** Synchronous, non-suspend read -- see useVaporwaveThemeSync's doc for why (used by
+     *  MainActivity to compute the launch window background before Compose runs). */
+    fun useOledBlackSync(): Boolean = prefs.getBoolean(KEY_USE_OLED_BLACK, false)
+
+    suspend fun loadSkipSplashScreen(): Boolean = withContext(Dispatchers.IO) {
+        prefs.getBoolean(KEY_SKIP_SPLASH_SCREEN, false)
+    }
+
+    suspend fun saveSkipSplashScreen(enabled: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_SKIP_SPLASH_SCREEN, enabled).apply()
+    }
+
+    /**
+     * Synchronous, non-suspend read -- MainActivity needs this decided before its very first
+     * composition (to seed showSplash's initial value), which is earlier than the ViewModel's
+     * own async settings load would otherwise resolve it. SharedPreferences is safe to read
+     * synchronously like this (already memory-cached by the time this runs).
+     */
+    fun skipSplashScreenSync(): Boolean = prefs.getBoolean(KEY_SKIP_SPLASH_SCREEN, false)
 
     suspend fun loadFavouriteIds(): Set<Long> = withContext(Dispatchers.IO) {
         val raw = prefs.getStringSet(KEY_FAVOURITE_IDS, emptySet()) ?: emptySet()
@@ -835,6 +898,7 @@ class MusicRepository(private val context: Context) {
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_USE_MATERIAL_YOU = "use_material_you"
         private const val KEY_USE_OLED_BLACK = "use_oled_black"
+        private const val KEY_SKIP_SPLASH_SCREEN = "skip_splash_screen"
         private const val KEY_EQ_ENABLED = "eq_enabled"
         private const val KEY_EQ_BAND_GAINS = "eq_band_gains_json"
         private const val KEY_LYRICS_TREE_URI = "lyrics_tree_uri"

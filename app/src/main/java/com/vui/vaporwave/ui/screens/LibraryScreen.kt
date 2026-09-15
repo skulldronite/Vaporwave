@@ -737,13 +737,13 @@ fun ShuffleDiceButton(
                 launch {
                     diceRotation.animateTo(
                         targetValue = diceRotation.value + 360f,
-                        animationSpec = tween(durationMillis = 500, easing = FastOutSlowInEasing)
+                        animationSpec = tween(durationMillis = 900, easing = FastOutSlowInEasing)
                     )
                 }
                 // Rapidly cycle random faces so the dice appears to actually roll a number.
-                repeat(10) {
+                repeat(5) {
                     diceFace = (1..6).random()
-                    delay(55)
+                    delay(150)
                 }
                 isRolling = false
                 onShuffleClick()
