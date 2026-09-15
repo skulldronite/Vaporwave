@@ -3,6 +3,9 @@ package com.vui.vaporwave
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.media.audiofx.AudioEffect
 import android.net.Uri
 import android.os.Build
@@ -114,6 +117,7 @@ import com.vui.vaporwave.ui.screens.SearchScreen
 import com.vui.vaporwave.ui.screens.SettingsScreen
 import com.vui.vaporwave.ui.screens.shareTrack
 import com.vui.vaporwave.ui.screens.SplashScreen
+import com.vui.vaporwave.ui.screens.SplashScreenLight
 import com.vui.vaporwave.ui.screens.TrackDetailsScreen
 
 class MainActivity : ComponentActivity() {
@@ -122,6 +126,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Overrides the static windowBackground from themes.xml/values-night -- that XML-only
+        // approach can only react to the system's own day/night state (it's painted before any
+        // app code runs at all), so it has no way to reflect the app's own in-app ThemeMode
+        // (System/Light/Dark) setting or OLED black when those disagree with the system. This
+        // runs as early as possible in onCreate, before setContent, so it takes effect before the
+        // window's first frame is actually presented -- replacing that static guess with the
+        // real computed color the moment enough app code has run to know it (a synchronous prefs
+        // read, not the ViewModel's usual async settings load).
+        window.setBackgroundDrawable(ColorDrawable(computeLaunchWindowBackgroundColor()))
+
         enableEdgeToEdge()
         // The manifest already declares adjustNothing, but some OEM skins (observed on a Vivo
         // running Android 16) ignore that declaration and pan/resize the window on their own when
@@ -171,8 +186,11 @@ class MainActivity : ComponentActivity() {
                 ) {
                     // Shown once per process (not on rotation -- MainActivity's configChanges
                     // already keeps onCreate from re-running for that -- and not when just
-                    // resuming from recents, since onCreate isn't called then either).
-                    var showSplash by remember { mutableStateOf(true) }
+                    // resuming from recents, since onCreate isn't called then either). Seeded via
+                    // a synchronous prefs read (skipSplashScreenSync), not the ViewModel's usual
+                    // async settings load -- that load hasn't necessarily resolved yet by this
+                    // first composition, and this decision needs to be made before it, not after.
+                    var showSplash by remember { mutableStateOf(!viewModel.skipSplashScreenSync()) }
 
                     Crossfade(
                         targetState = showSplash,
@@ -183,10 +201,17 @@ class MainActivity : ComponentActivity() {
                         label = "splash"
                     ) { splashVisible ->
                         if (splashVisible) {
-                            SplashScreen(
-                                backgroundColor = MaterialTheme.colorScheme.background,
-                                onFinished = { showSplash = false }
-                            )
+                            if (effectiveDarkTheme) {
+                                SplashScreen(
+                                    backgroundColor = MaterialTheme.colorScheme.background,
+                                    onFinished = { showSplash = false }
+                                )
+                            } else {
+                                SplashScreenLight(
+                                    backgroundColor = MaterialTheme.colorScheme.background,
+                                    onFinished = { showSplash = false }
+                                )
+                            }
                         } else {
                             // Disables the stretch/"jelly" overscroll effect for every scrollable
                             // in the app (all the LazyColumns, the pager, etc.) -- applied once
@@ -208,6 +233,29 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIncomingIntent(intent)
+    }
+
+    /**
+     * Colors matched to VaporwaveLightColorScheme/VaporwaveDarkColorScheme's own `background`
+     * value (LightSurface #FCF7FD, VaporVoid #0B0813) and to the OLED override's `background`
+     * (pure black -- see Theme.kt's `useOledBlack && darkTheme` branch), rather than any theme
+     * token -- Compose's own theme isn't constructed yet this early, so these have to be plain
+     * hardcoded literals matching what it will resolve to.
+     */
+    private fun computeLaunchWindowBackgroundColor(): Int {
+        val themeMode = viewModel.themeModeSync()
+        val systemInDarkTheme = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        val effectiveDarkTheme = when (themeMode) {
+            ThemeMode.SYSTEM -> systemInDarkTheme
+            ThemeMode.LIGHT -> false
+            ThemeMode.DARK -> true
+        }
+        return when {
+            effectiveDarkTheme && viewModel.useOledBlackSync() -> Color.BLACK
+            effectiveDarkTheme -> Color.parseColor("#FF0B0813")
+            else -> Color.parseColor("#FFFCF7FD")
+        }
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
@@ -338,6 +386,7 @@ class MainActivity : ComponentActivity() {
         val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
         val useMaterialYou by viewModel.useMaterialYou.collectAsStateWithLifecycle()
         val useOledBlack by viewModel.useOledBlack.collectAsStateWithLifecycle()
+        val skipSplashScreen by viewModel.skipSplashScreen.collectAsStateWithLifecycle()
         val isEffectivelyDark = when (themeMode) {
             ThemeMode.SYSTEM -> isSystemInDarkTheme()
             ThemeMode.LIGHT -> false
@@ -663,6 +712,8 @@ class MainActivity : ComponentActivity() {
                         onToggleMaterialYou = {},
                         useOledBlack = useOledBlack,
                         onToggleOledBlack = {},
+                        skipSplashScreen = skipSplashScreen,
+                        onToggleSkipSplashScreen = {},
                         isEffectivelyDark = isEffectivelyDark,
                         hasLyricsFolderAccess = lyricsTreeUri != null,
                         onGrantLyricsFolderAccess = {},
@@ -768,6 +819,8 @@ class MainActivity : ComponentActivity() {
                                     onToggleMaterialYou = { viewModel.setUseMaterialYou(it) },
                                     useOledBlack = useOledBlack,
                                     onToggleOledBlack = { viewModel.setUseOledBlack(it) },
+                                    skipSplashScreen = skipSplashScreen,
+                                    onToggleSkipSplashScreen = { viewModel.setSkipSplashScreen(it) },
                                     isEffectivelyDark = isEffectivelyDark,
                                     hasLyricsFolderAccess = lyricsTreeUri != null,
                                     onGrantLyricsFolderAccess = { lyricsFolderLauncher.launch(null) },

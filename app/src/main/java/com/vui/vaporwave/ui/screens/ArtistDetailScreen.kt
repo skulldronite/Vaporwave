@@ -52,6 +52,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -75,6 +76,7 @@ import coil3.request.ImageRequest
 import coil3.size.Size
 import com.vui.vaporwave.model.AudioTrack
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /** Which of the artist screen's two layouts is showing. Always starts on Tracks when reopened. */
 enum class ArtistViewMode { TRACKS, ALBUMS }
@@ -146,6 +148,17 @@ fun ArtistDetailScreen(
     var viewMode by rememberSaveable { mutableStateOf(ArtistViewMode.TRACKS) }
     var albumSort by rememberSaveable { mutableStateOf(ArtistAlbumSortOption.NAME) }
 
+    // Tracks and Albums are two branches sharing a single LazyColumn item (see the AnimatedContent
+    // below) rather than separate lists, so they also share one LazyListState. AnimatedContent has
+    // no SizeTransform here, so that item's measured height snaps straight to the incoming
+    // content's height the instant viewMode changes -- if the list was scrolled deep into a long
+    // Tracks section, that offset is now invalid against Albums' much shorter content, and Compose
+    // has to clamp it back into bounds on the next layout pass. That reactive clamp is what showed
+    // up as a blank frame before Albums content "snapped" into view. Resetting scroll to the top
+    // ourselves the moment the mode changes means the offset is never invalid in the first place.
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
     // Tracks *why* viewMode is whatever it currently is, not *when* it became that -- deliberately
     // plain remember (always starts false on a fresh composition), not rememberSaveable: only the
     // pill/swipe's own handler below ever sets this true, so a restored viewMode (e.g. coming back
@@ -156,6 +169,12 @@ fun ArtistDetailScreen(
     // than trying to time it.
     var viewModeChangedByUser by remember { mutableStateOf(false) }
     fun setViewMode(mode: ArtistViewMode) {
+        if (mode != viewMode) {
+            // Instant jump (not an animated scroll) so the position is already valid for the
+            // incoming content by the time AnimatedContent swaps it in, rather than animating from
+            // a soon-to-be-invalid offset.
+            coroutineScope.launch { listState.scrollToItem(0) }
+        }
         viewMode = mode
         viewModeChangedByUser = true
     }
@@ -182,7 +201,6 @@ fun ArtistDetailScreen(
         }
     }
 
-    val listState = rememberLazyListState()
     var headerHeightPx by remember { mutableIntStateOf(0) }
     val heroCollapseFraction by remember {
         derivedStateOf {

@@ -116,6 +116,11 @@ fun SearchScreen(
         sortSearchResults(results, sortOption, sortDirection)
     }
     val closestMatchId = remember(results, query) { findClosestMatch(results, query)?.id }
+    // The closest-match highlight is meant to point at a suggestion, not track what's actually
+    // playing -- once the user has tapped *any* row (including the highlighted one itself),
+    // it's served its purpose and should stop drawing attention to itself. Reset per query so a
+    // fresh search can highlight again.
+    var dismissedHighlightId by remember(query) { mutableStateOf<Long?>(null) }
 
     // Tracks which rows have already played their entrance animation, for as long as this
     // search card stays open -- LazyColumn only keeps a small buffer of off-screen items
@@ -254,9 +259,10 @@ fun SearchScreen(
                             TrackItem(
                                 track = track,
                                 isPlayingThisTrack = currentTrack?.id == track.id,
-                                isHighlighted = track.id == closestMatchId,
+                                isHighlighted = track.id == closestMatchId && track.id != dismissedHighlightId,
                                 onClick = {
                                     keyboardController?.hide()
+                                    dismissedHighlightId = closestMatchId
                                     onTrackClick(track)
                                 },
                                 modifier = Modifier

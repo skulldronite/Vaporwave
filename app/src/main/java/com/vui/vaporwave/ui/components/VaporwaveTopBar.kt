@@ -74,13 +74,13 @@ fun VaporwaveTopBar(
 ) {
     var isMenuExpanded by remember { mutableStateOf(false) }
 
-    // Ever-incrementing rather than toggled 0/360 -- animateFloatAsState always takes the
-    // shortest path to its target, so toggling back to 0 after a full turn would spin the icon
-    // back counter-clockwise instead of continuing to turn the same way on every tap.
-    var settingsRotationTarget by remember { mutableStateOf(0f) }
+    // Positive rotationZ in graphicsLayer turns clockwise, so this turns the cog 45 degrees
+    // right on open and back left (anticlockwise) on close -- driven directly by isMenuExpanded
+    // rather than an ever-incrementing target, so open and close are always exactly reverse
+    // animations of each other instead of both just spinning the same direction.
     val settingsRotation by animateFloatAsState(
-        targetValue = settingsRotationTarget,
-        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
+        targetValue = if (isMenuExpanded) 45f else 0f,
+        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
         label = "settingsIconRotation"
     )
 
@@ -196,10 +196,7 @@ fun VaporwaveTopBar(
 
             Box(modifier = Modifier.align(Alignment.Top)) {
                 IconButton(
-                    onClick = {
-                        isMenuExpanded = true
-                        settingsRotationTarget += 360f
-                    }
+                    onClick = { isMenuExpanded = true }
                 ) {
                     Icon(
                         imageVector = Icons.Default.Settings,

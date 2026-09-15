@@ -30,6 +30,7 @@ import com.vui.vaporwave.model.Playlist
 import com.vui.vaporwave.model.LyricsResult
 import com.vui.vaporwave.model.RecentAudioEntry
 import com.vui.vaporwave.model.ThemeMode
+import com.vui.vaporwave.VaporwaveApplication
 import com.vui.vaporwave.service.VaporwavePlaybackService
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
@@ -66,6 +67,11 @@ sealed class MetadataSaveState {
     data class Done(val successCount: Int, val totalCount: Int) : MetadataSaveState()
     data class Error(val message: String) : MetadataSaveState()
 }
+
+// A track only counts toward play stats (Most Played, Recently Played) once it's been the
+// active media item for this long -- otherwise quickly skipping through a queue inflates play
+// counts for tracks the user never actually listened to.
+private const val PLAY_CREDIT_DELAY_MS = 20_000L
 
 class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -187,12 +193,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _libraryDetailStack = MutableStateFlow<List<LibraryDetail>>(emptyList())
     val libraryDetailStack: StateFlow<List<LibraryDetail>> = _libraryDetailStack.asStateFlow()
 
-    private val _useVaporwaveTheme = MutableStateFlow(true)
+    // Seeded synchronously from disk right here, not via loadPersistedState()'s usual async
+    // load -- MainActivity reads these two (through VaporwaveTheme) on its very first
+    // composition, which happens before that async load would otherwise have resolved. Without
+    // a synchronous seed, that first frame briefly rendered whatever hardcoded default was
+    // written here regardless of what the user actually had saved -- a flash of the wrong theme
+    // (dark + Neon) right at launch.
+    private val _useVaporwaveTheme = MutableStateFlow(repository.useVaporwaveThemeSync())
     val useVaporwaveTheme: StateFlow<Boolean> = _useVaporwaveTheme.asStateFlow()
 
-    // DARK is the pre-ThemeMode default (matches the old useDarkTheme's default of true) --
-    // actually seeded from disk (migrating the old boolean if needed) by loadPersistedState().
-    private val _themeMode = MutableStateFlow(ThemeMode.DARK)
+    private val _themeMode = MutableStateFlow(repository.themeModeSync())
     val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
 
     private val _useMaterialYou = MutableStateFlow(false)
@@ -200,6 +210,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _useOledBlack = MutableStateFlow(false)
     val useOledBlack: StateFlow<Boolean> = _useOledBlack.asStateFlow()
+
+    private val _skipSplashScreen = MutableStateFlow(false)
+    val skipSplashScreen: StateFlow<Boolean> = _skipSplashScreen.asStateFlow()
 
     private val _favouriteTrackIds = MutableStateFlow<Set<Long>>(emptySet())
     val favouriteTrackIds: StateFlow<Set<Long>> = _favouriteTrackIds.asStateFlow()
@@ -288,6 +301,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         combine(_allTracks, _playStats) { tracks, stats ->
             // Ranked by total estimated playtime (play count x duration) rather than raw play
             // count, so a handful of plays of a long track can outrank many plays of a short one.
+            // Capped at the 125 highest-ranked tracks either way.
             val mostPlayed = tracks
                 .filter { (stats[it.id]?.playCount ?: 0) > 0 }
                 .sortedByDescending { stats[it.id]!!.playCount.toLong() * it.durationMs }
@@ -308,6 +322,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     private var progressJob: Job? = null
+    // Guards recordPlay: a play only counts once a track has been the active media item for at
+    // least PLAY_CREDIT_DELAY_MS, so skipping through tracks quickly doesn't inflate Most Played.
+    // Cancelled and restarted on every transition; a track that's skipped away from before the
+    // delay elapses never gets credited at all.
+    private var pendingPlayCreditJob: Job? = null
     private var loadJob: Job? = null
     private var hasLoadedTracks = false
     private var currentPlaylist: List<AudioTrack> = emptyList()
@@ -363,13 +382,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _playStats.value = repository.loadPlayStats()
             _showSwipeHint.value = !repository.hasSeenSwipeHint()
             _recentlyOpenedFiles.value = repository.loadRecentlyOpenedFiles()
-            _useVaporwaveTheme.value = repository.loadUseVaporwaveTheme()
-            // Migrates a pre-ThemeMode install's old dark/light boolean the first time this
-            // version runs, instead of everyone landing on SYSTEM by surprise.
-            _themeMode.value = repository.loadThemeMode()
-                ?: if (repository.loadUseDarkTheme()) ThemeMode.DARK else ThemeMode.LIGHT
+            // useVaporwaveTheme/themeMode are NOT re-read here -- both StateFlows are already
+            // seeded synchronously from the same prefs at construction time (see their
+            // declarations above), so re-reading here would just be a redundant duplicate load.
             _useMaterialYou.value = repository.loadUseMaterialYou()
             _useOledBlack.value = repository.loadUseOledBlack()
+            _skipSplashScreen.value = repository.loadSkipSplashScreen()
             _isEqEnabled.value = repository.loadEqEnabled()
             repository.loadEqBandGains()?.let { _eqBandGains.value = it }
             sendEqualizerStateToService()
@@ -456,7 +474,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 val track = trackId?.let { trackById[it] ?: externalTrackById[it] }
                 _currentTrack.value = track
                 _duration.value = player.duration.coerceAtLeast(0L)
-                track?.let { recordPlay(it.id) }
+                pendingPlayCreditJob?.cancel()
+                pendingPlayCreditJob = track?.let {
+                    viewModelScope.launch {
+                        delay(PLAY_CREDIT_DELAY_MS)
+                        recordPlay(it.id)
+                    }
+                }
             }
 
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
@@ -602,6 +626,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _currentTrack.value = track
 
         val startIndex = playlist.indexOfFirst { it.contentUri == track.contentUri }.coerceAtLeast(0)
+
+        // Kicks off artwork resolution for the track that's about to become current before
+        // handing anything to the controller, rather than leaving Media3 to discover it needs
+        // this bitmap only once it's already building the notification -- see
+        // ContentUriBitmapLoader for why that gap matters on slower OEM MediaProvider stacks.
+        (getApplication<Application>() as VaporwaveApplication).notificationBitmapLoader.prewarm(track.artworkUri)
 
         val mediaItems = playlist.map { item ->
             MediaItem.Builder()
@@ -831,6 +861,20 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _useOledBlack.value = enabled
         viewModelScope.launch { repository.saveUseOledBlack(enabled) }
     }
+
+    fun setSkipSplashScreen(enabled: Boolean) {
+        _skipSplashScreen.value = enabled
+        viewModelScope.launch { repository.saveSkipSplashScreen(enabled) }
+    }
+
+    /** See MusicRepository.skipSplashScreenSync's doc -- needed before MainActivity's first frame. */
+    fun skipSplashScreenSync(): Boolean = repository.skipSplashScreenSync()
+
+    /** See MusicRepository.themeModeSync's doc -- used to compute the launch window background. */
+    fun themeModeSync(): ThemeMode = repository.themeModeSync()
+
+    /** See MusicRepository.useOledBlackSync's doc -- used to compute the launch window background. */
+    fun useOledBlackSync(): Boolean = repository.useOledBlackSync()
 
     fun setEqualizer(enabled: Boolean, gains: List<Float>) {
         _isEqEnabled.value = enabled

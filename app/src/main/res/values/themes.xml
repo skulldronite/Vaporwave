@@ -1,7 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Vaporwave" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#FF181228</item>
+    <!-- This paints the native window before Compose's first frame ever runs (which is before
+         any of the app's own runtime theme logic can apply), so it can only react to the
+         system's own day/night state via the values-night resource qualifier below. It has no
+         way to know the app's own in-app ThemeMode (System/Light/Dark) setting, since that lives
+         in app state this early paint can't see. Matches VaporwaveLightColorScheme's background
+         (LightSurface, #FCF7FD) so this blends into the real UI once it loads instead of flashing
+         a mismatched color first. -->
+    <style name="Theme.Vaporwave" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFFCF7FD</item>
     </style>
 </resources>

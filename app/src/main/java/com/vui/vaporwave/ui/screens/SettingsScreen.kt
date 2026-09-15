@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -54,6 +55,8 @@ fun SettingsScreen(
     onToggleMaterialYou: (Boolean) -> Unit,
     useOledBlack: Boolean,
     onToggleOledBlack: (Boolean) -> Unit,
+    skipSplashScreen: Boolean,
+    onToggleSkipSplashScreen: (Boolean) -> Unit,
     // Whether dark colors are actually showing right now -- resolves ThemeMode.SYSTEM against
     // the device's current day/night state, since OLED black only makes sense while dark is
     // actually on screen, including when that's because the system itself is in dark mode.
@@ -134,11 +137,7 @@ fun SettingsScreen(
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = if (useVaporwaveTheme) {
-                                "1980's color theme! Neon Pink."
-                            } else {
-                                "Off"
-                            },
+                            text = "1980's color theme! Neon Pink.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -181,10 +180,8 @@ fun SettingsScreen(
                             Text(
                                 text = if (useVaporwaveTheme) {
                                     "Disabled while Neon Theme is on"
-                                } else if (useMaterialYou) {
-                                    "Using wallpaper-based dynamic colors"
                                 } else {
-                                    "Off"
+                                    "Using wallpaper-based dynamic colors"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -233,6 +230,38 @@ fun SettingsScreen(
                             )
                         }
                     }
+                }
+
+                // Skip Intro Animation -- always shown (unlike OLED Theme above, not tied to
+                // dark/light), so it isn't wrapped in that AnimatedVisibility.
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Skip Intro Animation",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Go straight to your library — skips the neon intro on launch",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = skipSplashScreen,
+                        onCheckedChange = onToggleSkipSplashScreen
+                    )
                 }
             }
         }

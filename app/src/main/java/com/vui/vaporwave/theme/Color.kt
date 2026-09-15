@@ -41,3 +41,9 @@ val LightSurfaceContainer = Color(0xFFF3EDF6)
 // to read as a distinct, lifted surface floating over the rest of the UI, not as a continuation
 // of the current background.
 val SearchCardSurface = Color(0xFFF1E1EC)
+
+// Light-mode splash screen only: a more saturated pink than VaporPink for the lettering itself
+// (reads as pastel against a light background), paired with a soft, light pink glow halo tuned to
+// stay visible without overpowering the lettering.
+val SplashPinkBright = Color(0xFFFF1FA8)
+val SplashPinkGlow = Color(0xFFFF9FE0)

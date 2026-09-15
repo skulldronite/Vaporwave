@@ -6,6 +6,7 @@ import android.media.audiofx.Equalizer
 import android.os.Bundle
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
@@ -15,6 +16,7 @@ import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.vui.vaporwave.MainActivity
+import com.vui.vaporwave.VaporwaveApplication
 
 /**
  * VaporwavePlaybackService manages background audio playback,
@@ -34,6 +36,8 @@ class VaporwavePlaybackService : MediaSessionService() {
     private var desiredEqEnabled = false
     private var desiredEqGains: FloatArray? = null
 
+    private lateinit var bitmapLoader: ContentUriBitmapLoader
+
     override fun onCreate() {
         super.onCreate()
 
@@ -50,6 +54,7 @@ class VaporwavePlaybackService : MediaSessionService() {
             .build()
 
         this.player = exoPlayer
+        bitmapLoader = (application as VaporwaveApplication).notificationBitmapLoader
 
         // ExoPlayer can (rarely) regenerate its AudioTrack session id across its lifetime -- the
         // Equalizer is rebuilt (not just left stale) whenever that happens, reapplying whatever
@@ -57,6 +62,20 @@ class VaporwavePlaybackService : MediaSessionService() {
         exoPlayer.addListener(object : Player.Listener {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 recreateEqualizer(audioSessionId)
+            }
+
+            // Warms the notification artwork cache for whatever track is coming up *next* while
+            // the current one is still playing, so by the time playback actually advances to it
+            // and Media3 asks its BitmapLoader for that artwork, it's often already resolved
+            // instead of triggering a fresh loadThumbnail IPC right as the notification needs it
+            // -- this is the gap that shows up as a brief blank-artwork flash on a fast device
+            // (a Samsung S9) and, on a slower/OEM-throttled one (observed on Vivo), can miss
+            // entirely if the session moves on again before the load finishes.
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val nextIndex = exoPlayer.nextMediaItemIndex
+                if (nextIndex == C.INDEX_UNSET) return
+                val nextArtworkUri = exoPlayer.getMediaItemAt(nextIndex).mediaMetadata.artworkUri
+                bitmapLoader.prewarm(nextArtworkUri)
             }
         })
         recreateEqualizer(exoPlayer.audioSessionId)
@@ -75,8 +94,10 @@ class VaporwavePlaybackService : MediaSessionService() {
         mediaSession = MediaSession.Builder(this, exoPlayer)
             .setSessionActivity(sessionActivityPendingIntent)
             // Media3's default BitmapLoader doesn't reliably resolve the content:// MediaStore
-            // URIs this app uses for artwork -- see ContentUriBitmapLoader for why.
-            .setBitmapLoader(ContentUriBitmapLoader(this))
+            // URIs this app uses for artwork -- see ContentUriBitmapLoader for why. Shared with
+            // MusicViewModel's prewarm calls (see bitmapLoader assignment above) rather than a
+            // fresh instance, so both sides hit the same cache.
+            .setBitmapLoader(bitmapLoader)
             .setCallback(EqualizerSessionCallback())
             .build()
     }
