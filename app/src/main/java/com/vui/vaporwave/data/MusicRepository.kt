@@ -524,6 +524,31 @@ class MusicRepository(private val context: Context) {
         prefs.edit().putString(KEY_RECENT_OPENED_FILES, array.toString()).apply()
     }
 
+    suspend fun loadEqEnabled(): Boolean = withContext(Dispatchers.IO) {
+        prefs.getBoolean(KEY_EQ_ENABLED, false)
+    }
+
+    suspend fun saveEqEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_EQ_ENABLED, enabled).apply()
+    }
+
+    /** Null when nothing has been saved yet -- the caller falls back to a flat (all-zero) curve. */
+    suspend fun loadEqBandGains(): List<Float>? = withContext(Dispatchers.IO) {
+        val raw = prefs.getString(KEY_EQ_BAND_GAINS, null) ?: return@withContext null
+        try {
+            val array = JSONArray(raw)
+            (0 until array.length()).map { array.getDouble(it).toFloat() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    suspend fun saveEqBandGains(gains: List<Float>) = withContext(Dispatchers.IO) {
+        val array = JSONArray()
+        gains.forEach { array.put(it.toDouble()) }
+        prefs.edit().putString(KEY_EQ_BAND_GAINS, array.toString()).apply()
+    }
+
     companion object {
         private const val KEY_FAVOURITE_IDS = "favourite_track_ids"
         private const val KEY_PLAYLISTS = "playlists_json"
@@ -532,6 +557,8 @@ class MusicRepository(private val context: Context) {
         private const val KEY_RECENT_OPENED_FILES = "recent_opened_files_json"
         private const val KEY_USE_VAPORWAVE_THEME = "use_vaporwave_theme"
         private const val KEY_USE_DARK_THEME = "use_dark_theme"
+        private const val KEY_EQ_ENABLED = "eq_enabled"
+        private const val KEY_EQ_BAND_GAINS = "eq_band_gains_json"
     }
 }
 
