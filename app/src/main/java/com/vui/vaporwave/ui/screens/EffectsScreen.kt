@@ -1,9 +1,6 @@
 package com.vui.vaporwave.ui.screens
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,7 +14,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
@@ -38,13 +34,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.vui.vaporwave.theme.VaporCyan
-import com.vui.vaporwave.theme.VaporMint
-import com.vui.vaporwave.theme.VaporPink
 import java.util.Locale
 import kotlin.math.abs
 
@@ -71,64 +63,9 @@ fun EffectsScreen(
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Hero Card: Vaporwave Sound Studio
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-            ),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                VaporPink.copy(alpha = 0.22f),
-                                VaporCyan.copy(alpha = 0.15f),
-                                VaporMint.copy(alpha = 0.10f)
-                            )
-                        )
-                    )
-                    .padding(20.dp)
-            ) {
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(28.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "VAPORWAVE STUDIO",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                letterSpacing = 1.sp,
-                                fontWeight = FontWeight.Bold
-                            ),
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Text(
-                        text = "Sculpt your music in real time. Experience audio slowed down with lowered pitch for that signature 1980s VHS tape & dream pop aesthetic.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
         // Preset Quick Action Buttons
         Text(
-            text = "Aesthetic Presets",
+            text = "Presets",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
@@ -165,30 +102,6 @@ fun EffectsScreen(
                 }
             }
 
-            // Preset 2: Nightcore Sped Up
-            Button(
-                onClick = { onSetSpeedAndPitch(1.25f, 1.25f) },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (approxEquals(currentSpeed, 1.25f) && approxEquals(currentPitch, 1.25f)) {
-                        MaterialTheme.colorScheme.secondary
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerHigh
-                    },
-                    contentColor = if (approxEquals(currentSpeed, 1.25f) && approxEquals(currentPitch, 1.25f)) {
-                        MaterialTheme.colorScheme.onSecondary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    }
-                )
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Nightcore", fontWeight = FontWeight.Bold)
-                    Text("1.25x", fontSize = 11.sp)
-                }
-            }
-
             // Preset 3: Normal 1.0x
             Button(
                 onClick = { onSetSpeedAndPitch(1.0f, 1.0f) },
@@ -212,9 +125,33 @@ fun EffectsScreen(
                     Text("1.00x", fontSize = 11.sp)
                 }
             }
+
+            // Preset 2: Nightcore Sped Up
+            Button(
+                onClick = { onSetSpeedAndPitch(1.25f, 1.25f) },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (approxEquals(currentSpeed, 1.25f) && approxEquals(currentPitch, 1.25f)) {
+                        MaterialTheme.colorScheme.secondary
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    contentColor = if (approxEquals(currentSpeed, 1.25f) && approxEquals(currentPitch, 1.25f)) {
+                        MaterialTheme.colorScheme.onSecondary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    }
+                )
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Nightcore", fontWeight = FontWeight.Bold)
+                    Text("1.25x", fontSize = 11.sp)
+                }
+            }
         }
 
-        Spacer(modifier = Modifier.height(28.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Live Custom Controls
         Card(

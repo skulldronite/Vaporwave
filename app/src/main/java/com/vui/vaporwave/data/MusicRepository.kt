@@ -403,6 +403,22 @@ class MusicRepository(private val context: Context) {
         prefs.edit().putBoolean(KEY_SEEN_SWIPE_HINT, true).apply()
     }
 
+    suspend fun loadUseVaporwaveTheme(): Boolean = withContext(Dispatchers.IO) {
+        prefs.getBoolean(KEY_USE_VAPORWAVE_THEME, true)
+    }
+
+    suspend fun saveUseVaporwaveTheme(useVaporwave: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_USE_VAPORWAVE_THEME, useVaporwave).apply()
+    }
+
+    suspend fun loadUseDarkTheme(): Boolean = withContext(Dispatchers.IO) {
+        prefs.getBoolean(KEY_USE_DARK_THEME, true)
+    }
+
+    suspend fun saveUseDarkTheme(useDark: Boolean) = withContext(Dispatchers.IO) {
+        prefs.edit().putBoolean(KEY_USE_DARK_THEME, useDark).apply()
+    }
+
     suspend fun loadFavouriteIds(): Set<Long> = withContext(Dispatchers.IO) {
         val raw = prefs.getStringSet(KEY_FAVOURITE_IDS, emptySet()) ?: emptySet()
         raw.mapNotNullTo(HashSet()) { it.toLongOrNull() }
@@ -514,6 +530,8 @@ class MusicRepository(private val context: Context) {
         private const val KEY_SEEN_SWIPE_HINT = "seen_swipe_hint"
         private const val KEY_PLAY_STATS = "play_stats_json"
         private const val KEY_RECENT_OPENED_FILES = "recent_opened_files_json"
+        private const val KEY_USE_VAPORWAVE_THEME = "use_vaporwave_theme"
+        private const val KEY_USE_DARK_THEME = "use_dark_theme"
     }
 }
 
