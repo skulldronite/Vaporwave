@@ -3,7 +3,7 @@ package com.vui.vaporwave
 import android.content.ContentResolver
 import android.net.Uri
 import android.provider.MediaStore
-import android.util.Size
+import android.util.Size as AndroidSize
 import coil3.ImageLoader
 import coil3.asImage
 import coil3.decode.DataSource
@@ -11,6 +11,8 @@ import coil3.fetch.FetchResult
 import coil3.fetch.Fetcher
 import coil3.fetch.ImageFetchResult
 import coil3.request.Options
+import coil3.size.Size
+import coil3.size.pxOrElse
 import coil3.toAndroidUri
 
 /**
@@ -27,11 +29,18 @@ import coil3.toAndroidUri
  */
 class AudioThumbnailFetcher(
     private val contentResolver: ContentResolver,
-    private val uri: Uri
+    private val uri: Uri,
+    private val requestedSize: Size
 ) : Fetcher {
 
     override suspend fun fetch(): FetchResult {
-        val bitmap = contentResolver.loadThumbnail(uri, Size(512, 512), null)
+        // Honor the caller's requested size (set via ImageRequest.Builder.size(...) at each call
+        // site) instead of always decoding a fixed 512x512 bitmap -- a 52dp list row only needs a
+        // 128x128 thumbnail, and decoding/caching a ~16x larger bitmap for it was starving the
+        // memory cache and causing extra decodes (jank) on re-scroll.
+        val width = requestedSize.width.pxOrElse { DEFAULT_THUMBNAIL_DIMENSION }
+        val height = requestedSize.height.pxOrElse { DEFAULT_THUMBNAIL_DIMENSION }
+        val bitmap = contentResolver.loadThumbnail(uri, AndroidSize(width, height), null)
         return ImageFetchResult(
             image = bitmap.asImage(),
             isSampled = true,
@@ -45,7 +54,11 @@ class AudioThumbnailFetcher(
             if (androidUri.scheme != ContentResolver.SCHEME_CONTENT || androidUri.authority != MediaStore.AUTHORITY) {
                 return null
             }
-            return AudioThumbnailFetcher(options.context.contentResolver, androidUri)
+            return AudioThumbnailFetcher(options.context.contentResolver, androidUri, options.size)
         }
+    }
+
+    private companion object {
+        const val DEFAULT_THUMBNAIL_DIMENSION = 512
     }
 }

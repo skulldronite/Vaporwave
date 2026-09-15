@@ -67,7 +67,8 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -137,6 +138,9 @@ fun NowPlayingSheet(
     isFavourite: Boolean,
     onToggleFavourite: () -> Unit,
     onAddToPlaylist: () -> Unit,
+    /** Whether the shared reachability pull (see [ReachabilityPullBox]) is currently forced fully open. */
+    isOneHandedModeEnabled: Boolean,
+    onToggleOneHandedMode: () -> Unit,
     onDismiss: () -> Unit,
     onPlayPause: () -> Unit,
     onSeekTo: (Long) -> Unit,
@@ -444,65 +448,116 @@ fun NowPlayingSheet(
                     .basicMarquee()
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
-            // Favourite (center) & Add to Playlist (right) Actions
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Spacer(modifier = Modifier.size(48.dp))
+            // Slowed & Favourite & Nightcore sit in a cluster centered on the heart -- Slowed and
+            // Nightcore are the same size, so centering the cluster as a whole (rather than
+            // spreading three unevenly-sized groups across the row with SpaceBetween, which used
+            // to leave the heart off-center) puts the heart exactly in the middle. Add to Playlist
+            // is unrelated to that cluster and stays pinned to the row's trailing edge.
+            // Slowed/Nightcore are an exclusive pair, not independent toggles: tapping the active
+            // one turns it back off (Standard, 1.0x); tapping the other one switches straight to
+            // it. There's no separate "Standard" button any more -- 1.0x is just the state where
+            // neither preset is selected.
+            Box(modifier = Modifier.fillMaxWidth()) {
+                val isSlowed = abs(playbackSpeed - 0.85f) < 0.01f
+                val isNightcore = abs(playbackSpeed - 1.25f) < 0.01f
 
-                // A small celebration when the track is newly favourited -- a bounce, a little
-                // wiggle, and a ring pulsing outward and fading -- all only on the way in. An
-                // unfavourite is a plain, unanimated icon swap, no effects.
-                val heartScale = remember { Animatable(1f) }
-                val heartRotation = remember { Animatable(0f) }
-                val heartRingProgress = remember { Animatable(0f) }
-                LaunchedEffect(isFavourite) {
-                    if (isFavourite) {
-                        heartScale.snapTo(0.5f)
-                        heartRotation.snapTo(-20f)
-                        heartRingProgress.snapTo(0f)
-                        launch { heartScale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)) }
-                        launch { heartRotation.animateTo(0f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)) }
-                        launch { heartRingProgress.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) }
-                    } else {
-                        heartScale.snapTo(1f)
-                        heartRotation.snapTo(0f)
-                        heartRingProgress.snapTo(0f)
-                    }
+                // Mirrors Add to Playlist's placement on the opposite edge -- both are plain
+                // IconButtons flush against the Box's own bounds, so they land the same distance
+                // from their respective edges with no extra spacing math needed.
+                IconButton(
+                    onClick = onToggleOneHandedMode,
+                    modifier = Modifier.align(Alignment.CenterEnd)
+                ) {
+                    OneHandedModeIcon(
+                        tint = if (isOneHandedModeEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
-                Box(contentAlignment = Alignment.Center) {
-                    if (heartRingProgress.value > 0f && heartRingProgress.value < 1f) {
-                        Canvas(modifier = Modifier.size(48.dp)) {
-                            val ringAlpha = 1f - heartRingProgress.value
-                            val ringRadius = size.minDimension / 2f * (0.35f + heartRingProgress.value * 0.65f)
-                            drawCircle(
-                                color = VaporPink.copy(alpha = ringAlpha * 0.6f),
-                                radius = ringRadius,
-                                style = Stroke(width = size.minDimension * 0.05f)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.Center),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    PresetIconButton(
+                        icon = Icons.Default.Bedtime,
+                        label = "Slowed",
+                        selected = isSlowed,
+                        onClick = {
+                            if (isSlowed) onSetSpeedAndPitch(1f, 1f) else onSetSpeedAndPitch(0.85f, 0.85f)
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    // A small celebration when the track is newly favourited -- a bounce, a little
+                    // wiggle, and a ring pulsing outward and fading -- all only on the way in. An
+                    // unfavourite is a plain, unanimated icon swap, no effects.
+                    val heartScale = remember { Animatable(1f) }
+                    val heartRotation = remember { Animatable(0f) }
+                    val heartRingProgress = remember { Animatable(0f) }
+                    LaunchedEffect(isFavourite) {
+                        if (isFavourite) {
+                            heartScale.snapTo(0.5f)
+                            heartRotation.snapTo(-20f)
+                            heartRingProgress.snapTo(0f)
+                            launch { heartScale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)) }
+                            launch { heartRotation.animateTo(0f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)) }
+                            launch { heartRingProgress.animateTo(1f, tween(450, easing = FastOutSlowInEasing)) }
+                        } else {
+                            heartScale.snapTo(1f)
+                            heartRotation.snapTo(0f)
+                            heartRingProgress.snapTo(0f)
+                        }
+                    }
+                    Box(contentAlignment = Alignment.Center) {
+                        if (heartRingProgress.value > 0f && heartRingProgress.value < 1f) {
+                            Canvas(modifier = Modifier.size(48.dp)) {
+                                val ringAlpha = 1f - heartRingProgress.value
+                                val ringRadius = size.minDimension / 2f * (0.35f + heartRingProgress.value * 0.65f)
+                                drawCircle(
+                                    color = VaporPink.copy(alpha = ringAlpha * 0.6f),
+                                    radius = ringRadius,
+                                    style = Stroke(width = size.minDimension * 0.05f)
+                                )
+                            }
+                        }
+                        IconButton(onClick = onToggleFavourite) {
+                            Icon(
+                                imageVector = if (isFavourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = if (isFavourite) "Remove from Favourites" else "Add to Favourites",
+                                tint = if (isFavourite) VaporPink else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .graphicsLayer {
+                                        scaleX = heartScale.value
+                                        scaleY = heartScale.value
+                                        rotationZ = heartRotation.value
+                                    }
                             )
                         }
                     }
-                    IconButton(onClick = onToggleFavourite) {
-                        Icon(
-                            imageVector = if (isFavourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = if (isFavourite) "Remove from Favourites" else "Add to Favourites",
-                            tint = if (isFavourite) VaporPink else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .size(28.dp)
-                                .graphicsLayer {
-                                    scaleX = heartScale.value
-                                    scaleY = heartScale.value
-                                    rotationZ = heartRotation.value
-                                }
-                        )
-                    }
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    PresetIconButton(
+                        icon = Icons.Default.Bolt,
+                        label = "Nightcore",
+                        selected = isNightcore,
+                        onClick = {
+                            if (isNightcore) onSetSpeedAndPitch(1f, 1f) else onSetSpeedAndPitch(1.25f, 1.25f)
+                        }
+                    )
                 }
 
-                IconButton(onClick = onAddToPlaylist) {
+                IconButton(
+                    onClick = onAddToPlaylist,
+                    modifier = Modifier.align(Alignment.CenterStart)
+                ) {
                     Icon(
                         imageVector = Icons.Default.AddCircle,
                         contentDescription = "Add to Playlist",
@@ -676,71 +731,63 @@ fun NowPlayingSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Quick playback-preset picker: Slowed / Standard / Nightcore, replacing the old
-            // single Slowed+Reverb toggle chip now that there are three speed/pitch presets
-            // instead of just one on/off pair.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally)
-            ) {
-                PresetButton(
-                    icon = Icons.Default.Bedtime,
-                    label = "Slowed",
-                    selected = abs(playbackSpeed - 0.85f) < 0.01f,
-                    onClick = { onSetSpeedAndPitch(0.85f, 0.85f) }
-                )
-                PresetButton(
-                    icon = Icons.Default.Speed,
-                    label = "Standard",
-                    selected = abs(playbackSpeed - 1f) < 0.01f,
-                    onClick = { onSetSpeedAndPitch(1f, 1f) }
-                )
-                PresetButton(
-                    icon = Icons.Default.Bolt,
-                    label = "Nightcore",
-                    selected = abs(playbackSpeed - 1.25f) < 0.01f,
-                    onClick = { onSetSpeedAndPitch(1.25f, 1.25f) }
-                )
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(10.dp))
         }
     }
 }
 
-/** One of the Slowed/Standard/Nightcore preset picker's three icon buttons. */
+/**
+ * A phone glyph with a small hand badge in the corner -- there's no single Material icon for
+ * "one-handed mode", so this layers [Icons.Default.TouchApp] over [Icons.Outlined.Smartphone].
+ * The outlined variant is a thin stroke tracing just the phone's silhouette (no solid fill), so
+ * its bezel reads noticeably thinner than the filled version's solid chrome-thickness edge.
+ */
 @Composable
-private fun PresetButton(
+private fun OneHandedModeIcon(tint: Color, modifier: Modifier = Modifier) {
+    Box(modifier = modifier) {
+        Icon(
+            imageVector = Icons.Outlined.Smartphone,
+            contentDescription = "One-handed mode",
+            tint = tint,
+            modifier = Modifier.fillMaxSize()
+        )
+        Icon(
+            imageVector = Icons.Default.TouchApp,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier
+                .size(11.dp)
+                .align(Alignment.BottomEnd)
+        )
+    }
+}
+
+/**
+ * The Slowed/Nightcore toggle buttons flanking the favourite icon. Icon-only (no label) so it
+ * sits comfortably in the same row as the other icon-sized actions there, unlike the larger
+ * labeled picker this replaced.
+ */
+@Composable
+private fun PresetIconButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     selected: Boolean,
     onClick: () -> Unit
 ) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Surface(
-            onClick = onClick,
-            shape = CircleShape,
-            color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-            modifier = Modifier.size(48.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = label,
-                    tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.size(32.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
         }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
