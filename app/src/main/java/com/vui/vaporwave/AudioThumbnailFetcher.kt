@@ -8,6 +8,7 @@ import android.util.Size as AndroidSize
 import coil3.ImageLoader
 import coil3.decode.DataSource
 import coil3.decode.ImageSource
+import coil3.disk.DiskCache
 import coil3.fetch.FetchResult
 import coil3.fetch.Fetcher
 import coil3.fetch.SourceFetchResult
@@ -37,7 +38,8 @@ import okio.FileSystem
 class AudioThumbnailFetcher(
     private val contentResolver: ContentResolver,
     private val uri: Uri,
-    private val requestedSize: Size
+    private val requestedSize: Size,
+    private val diskCache: DiskCache?
 ) : Fetcher {
 
     override suspend fun fetch(): FetchResult {
@@ -57,6 +59,33 @@ class AudioThumbnailFetcher(
         // memory cache and causing extra decodes (jank) on re-scroll.
         val width = requestedSize.width.pxOrElse { DEFAULT_THUMBNAIL_DIMENSION }
         val height = requestedSize.height.pxOrElse { DEFAULT_THUMBNAIL_DIMENSION }
+        // Same key shape AudioThumbnailKeyer produces for the memory cache -- keeping the two
+        // aligned isn't strictly required (they're separate cache layers), but there's no reason
+        // for them to diverge.
+        val cacheKey = "$uri@${width}x$height"
+
+        // Earlier versions of this fetcher assumed returning a SourceFetchResult was enough on
+        // its own to get thumbnails persisted to the DiskCache configured in
+        // VaporwaveApplication -- confirmed (by decompiling Coil3's own EngineInterceptor) that
+        // this was wrong: Coil only persists a result when the Fetcher itself writes into the
+        // DiskCache and returns an ImageSource backed by that cache entry (a FileImageSource,
+        // carrying a diskCacheKey) -- wrapping bytes in a plain in-memory Buffer, as this did
+        // before, produces a SourceImageSource with no diskCacheKey at all, which Coil has no way
+        // to know needs to be written anywhere. This checks for (and writes to) that disk cache
+        // explicitly instead of assuming Coil does it automatically.
+        diskCache?.openSnapshot(cacheKey)?.let { snapshot ->
+            return SourceFetchResult(
+                source = ImageSource(
+                    file = snapshot.data,
+                    fileSystem = diskCache.fileSystem,
+                    diskCacheKey = cacheKey,
+                    closeable = snapshot
+                ),
+                mimeType = "image/jpeg",
+                dataSource = DataSource.DISK
+            )
+        }
+
         val bitmap = try {
             contentResolver.loadThumbnail(uri, AndroidSize(width, height), null)
         } catch (e: FileNotFoundException) {
@@ -64,23 +93,42 @@ class AudioThumbnailFetcher(
             throw e
         }
 
-        // Re-encoded to JPEG bytes and returned as a SourceFetchResult (rather than handing back
-        // the already-decoded Bitmap as an ImageFetchResult) so Coil's own disk-cache-write path
-        // -- which only exists for SourceFetchResult, not ImageFetchResult -- actually persists
-        // this thumbnail to the 250MB DiskCache configured in VaporwaveApplication. Previously
-        // every thumbnail was decoded fresh from MediaStore on every cold start/cache eviction,
-        // silently making that disk cache dead weight.
         val bytes = ByteArrayOutputStream().use { stream ->
             bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
             stream.toByteArray()
         }
+
+        val editor = diskCache?.openEditor(cacheKey)
+        if (editor != null) {
+            try {
+                diskCache.fileSystem.write(editor.data) { write(bytes) }
+                val snapshot = editor.commitAndOpenSnapshot()
+                if (snapshot != null) {
+                    return SourceFetchResult(
+                        source = ImageSource(
+                            file = snapshot.data,
+                            fileSystem = diskCache.fileSystem,
+                            diskCacheKey = cacheKey,
+                            closeable = snapshot
+                        ),
+                        mimeType = "image/jpeg",
+                        dataSource = DataSource.DISK
+                    )
+                }
+            } catch (e: Exception) {
+                editor.abort()
+            }
+        }
+
+        // No disk cache available, or the write above failed -- still serve the decoded bytes
+        // from memory so this request succeeds, it just won't be persisted this time.
         return SourceFetchResult(
             source = ImageSource(
                 source = Buffer().write(bytes),
                 fileSystem = FileSystem.SYSTEM
             ),
             mimeType = "image/jpeg",
-            dataSource = DataSource.DISK
+            dataSource = DataSource.MEMORY
         )
     }
 
@@ -90,7 +138,7 @@ class AudioThumbnailFetcher(
             if (androidUri.scheme != ContentResolver.SCHEME_CONTENT || androidUri.authority != MediaStore.AUTHORITY) {
                 return null
             }
-            return AudioThumbnailFetcher(options.context.contentResolver, androidUri, options.size)
+            return AudioThumbnailFetcher(options.context.contentResolver, androidUri, options.size, imageLoader.diskCache)
         }
     }
 

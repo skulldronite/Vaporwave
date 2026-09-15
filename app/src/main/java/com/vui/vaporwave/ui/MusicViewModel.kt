@@ -278,21 +278,34 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             .take(200)
     }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // Ranked by total estimated playtime (play count x duration) rather than raw play count,
-    // so a handful of plays of a long track can outrank many plays of a short one.
-    val mostPlayedTracks: StateFlow<List<AudioTrack>> = combine(_allTracks, _playStats) { tracks, stats ->
-        tracks
-            .filter { (stats[it.id]?.playCount ?: 0) > 0 }
-            .sortedByDescending { stats[it.id]!!.playCount.toLong() * it.durationMs }
-            .take(125)
-    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    // mostPlayedTracks/recentlyPlayedTracks computed together as one Dispatchers.Default
+    // dispatch instead of two independent ones -- both are just different sort orders over the
+    // exact same filter/lookup work against tracks+playStats, so running them as two separate
+    // combine(...).flowOn(Default) chains did that filtering work twice concurrently. That
+    // redundancy matters most right at cold start, when it's competing with the initial
+    // MediaStore scan and the album/artist grouping passes for the same thread pool.
+    private val playHistoryLists: StateFlow<Pair<List<AudioTrack>, List<AudioTrack>>> =
+        combine(_allTracks, _playStats) { tracks, stats ->
+            // Ranked by total estimated playtime (play count x duration) rather than raw play
+            // count, so a handful of plays of a long track can outrank many plays of a short one.
+            val mostPlayed = tracks
+                .filter { (stats[it.id]?.playCount ?: 0) > 0 }
+                .sortedByDescending { stats[it.id]!!.playCount.toLong() * it.durationMs }
+                .take(125)
+            val recentlyPlayed = tracks
+                .filter { (stats[it.id]?.lastPlayedAt ?: 0L) > 0L }
+                .sortedByDescending { stats[it.id]!!.lastPlayedAt }
+                .take(125)
+            mostPlayed to recentlyPlayed
+        }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Lazily, emptyList<AudioTrack>() to emptyList())
 
-    val recentlyPlayedTracks: StateFlow<List<AudioTrack>> = combine(_allTracks, _playStats) { tracks, stats ->
-        tracks
-            .filter { (stats[it.id]?.lastPlayedAt ?: 0L) > 0L }
-            .sortedByDescending { stats[it.id]!!.lastPlayedAt }
-            .take(125)
-    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    val mostPlayedTracks: StateFlow<List<AudioTrack>> = playHistoryLists
+        .map { it.first }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val recentlyPlayedTracks: StateFlow<List<AudioTrack>> = playHistoryLists
+        .map { it.second }
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     private var progressJob: Job? = null
     private var loadJob: Job? = null

@@ -1,0 +1,12 @@
+# Hand-authored baseline profile (no Macrobenchmark module/Android Studio in this environment to
+# record a real one from an on-device user journey). ART/profileinstaller accept a curated,
+# broad rule set like this too -- it just AOT-compiles more than a recorded profile would rather
+# than less, trading some install-time/APK-size cost for cold-start speed. Covers the classes on
+# the cold-start path this app's own diagnosis identified as contended: splash -> MediaStore scan
+# (MusicRepository) -> derived-list computation (MusicViewModel) -> Library UI (LibraryScreen and
+# the rest of ui/) -> thumbnail decode/cache (AudioThumbnailFetcher/Keyer) -> playback service
+# connect (VaporwavePlaybackService).
+HSPLcom/vui/vaporwave/**->**(**)**
+HSPLcom/vui/vaporwave/data/**->**(**)**
+HSPLcom/vui/vaporwave/ui/**->**(**)**
+HSPLcom/vui/vaporwave/model/**->**(**)**

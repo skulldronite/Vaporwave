@@ -75,6 +75,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
@@ -140,6 +142,18 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.SYSTEM -> systemInDarkTheme
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
+            }
+
+            // enableEdgeToEdge() only decides status/nav bar icon appearance once, from whatever
+            // the system was in at that instant -- it's never re-evaluated on its own when the
+            // in-app ThemeMode toggle changes effectiveDarkTheme, since that doesn't recreate the
+            // Activity. Re-applying it here on every change keeps the bar icons legible against
+            // whichever background color just took over.
+            val view = LocalView.current
+            LaunchedEffect(effectiveDarkTheme) {
+                val controller = WindowCompat.getInsetsController(window, view)
+                controller.isAppearanceLightStatusBars = !effectiveDarkTheme
+                controller.isAppearanceLightNavigationBars = !effectiveDarkTheme
             }
 
             VaporwaveTheme(
@@ -1238,6 +1252,12 @@ class MainActivity : ComponentActivity() {
                 onOpenSettings = {
                     viewModel.setNowPlayingExpanded(false)
                     viewModel.setDestination(AppDestination.SETTINGS)
+                },
+                onOpenTrackDetails = {
+                    currentTrack?.let {
+                        viewModel.setNowPlayingExpanded(false)
+                        viewModel.openTrackDetails(it)
+                    }
                 },
                 onShare = { currentTrack?.let { shareTrack(context, it) } },
                 onDeleteTrack = { currentTrack?.let { viewModel.deleteTrack(it) } }

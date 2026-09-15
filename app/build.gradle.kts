@@ -22,6 +22,11 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // No production signingConfig exists in this project yet. Signing with the debug
+            // keystore here only so this release build type is installable for local testing
+            // (needed to get wildcard baseline-prof.txt rules expanded -- AGP only runs that
+            // expansion, expandReleaseArtProfileWildcards, for the release variant, not debug).
+            signingConfig = signingConfigs.getByName("debug")
         }
         debug {
             // Keep debug builds fast to iterate on -- no shrinking.
@@ -67,6 +72,11 @@ dependencies {
   // File/MediaStore access to non-owned, non-audio files on some devices (see MusicRepository's
   // fetchLyrics), so this is the reliable fallback.
   implementation(libs.androidx.documentfile)
+  // Installs app/src/main/baseline-prof.txt as an ahead-of-time compilation profile at install
+  // time, so ART can compile the app's cold-start hot path (splash -> MediaStore scan -> Library)
+  // instead of interpreting/JIT-warming it from scratch on every fresh install -- see the profile
+  // file itself for why this exists.
+  implementation(libs.androidx.profileinstaller)
 
   // Arch Components
   implementation(libs.androidx.lifecycle.runtime.compose)
