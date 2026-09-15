@@ -350,60 +350,61 @@ private fun TracksList(
         val canScroll by remember {
             derivedStateOf { listState.layoutInfo.totalItemsCount > listState.layoutInfo.visibleItemsInfo.size }
         }
-        val isAtTop by remember {
-            derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
-        }
-        val (highlightedTrackId, onAlphabetJump) = rememberTrackHighlight(sortedTracks, listState)
+        val (highlightedTrackId, onAlphabetJump) = rememberTrackHighlight(sortedTracks, listState, indexOffset = 1)
 
-        Column(modifier = modifier.fillMaxSize()) {
-            // Only visible while scrolled to the very top; scrolling down hides it.
-            AnimatedVisibility(visible = isAtTop) {
-                LibraryToolbar(
-                    sortOption = sortOption,
-                    onSortOptionSelected = { sortOption = it },
-                    onShuffleClick = { onShufflePlay(sortedTracks) },
-                    availableSortOptions = listOf(LibrarySortOption.NAME, LibrarySortOption.ARTIST)
-                )
-            }
-
-            Box(modifier = Modifier.weight(1f)) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        bottom = 120.dp,
-                        top = 4.dp,
-                        end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(
-                        items = sortedTracks,
-                        key = { it.id }
-                    ) { track ->
-                        val isPlayingThis = currentTrack?.id == track.id
-                        TrackItem(
-                            track = track,
-                            isPlayingThisTrack = isPlayingThis,
-                            onClick = { onTrackClick(track) },
-                            modifier = Modifier.padding(start = 8.dp),
-                            isHighlighted = track.id == highlightedTrackId,
-                            onAddToPlaylist = { onAddToPlaylist(track) },
-                            onShare = { onShare(track) },
-                            onTrackDetails = { onOpenTrackDetails(track) }
-                        )
-                    }
-                }
-
-                if (canScroll) {
-                    AlphabetScrollbar(
-                        labels = remember(sortedTracks, sortOption) { trackLabelsFor(sortedTracks, sortOption) },
-                        onJump = onAlphabetJump,
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .fillMaxHeight()
+        // The toolbar is a real item (index 0) in the LazyColumn below rather than a separate
+        // AnimatedVisibility sibling of a Modifier.weight(1f) list. That older pattern meant the
+        // list's own height constraint changed on every frame of the toolbar's collapse
+        // animation (weight resolves against the sibling's current measured size), forcing a full
+        // re-measure of the LazyColumn's visible item window each frame -- exactly the moment
+        // scrolling starts, which is when jank is most noticeable. Making the toolbar scroll away
+        // as ordinary list content means the LazyColumn's own size never changes.
+        Box(modifier = modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    bottom = 120.dp,
+                    top = 4.dp,
+                    end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                item(key = "toolbar", contentType = "toolbar") {
+                    LibraryToolbar(
+                        sortOption = sortOption,
+                        onSortOptionSelected = { sortOption = it },
+                        onShuffleClick = { onShufflePlay(sortedTracks) },
+                        availableSortOptions = listOf(LibrarySortOption.NAME, LibrarySortOption.ARTIST)
                     )
                 }
+
+                items(
+                    items = sortedTracks,
+                    key = { it.id }
+                ) { track ->
+                    val isPlayingThis = currentTrack?.id == track.id
+                    TrackItem(
+                        track = track,
+                        isPlayingThisTrack = isPlayingThis,
+                        onClick = { onTrackClick(track) },
+                        modifier = Modifier.padding(start = 8.dp),
+                        isHighlighted = track.id == highlightedTrackId,
+                        onAddToPlaylist = { onAddToPlaylist(track) },
+                        onShare = { onShare(track) },
+                        onTrackDetails = { onOpenTrackDetails(track) }
+                    )
+                }
+            }
+
+            if (canScroll) {
+                AlphabetScrollbar(
+                    labels = remember(sortedTracks, sortOption) { trackLabelsFor(sortedTracks, sortOption) },
+                    onJump = onAlphabetJump,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                )
             }
         }
     }
@@ -510,7 +511,8 @@ private fun rememberTrackHighlight(
 @Composable
 private fun rememberNameHighlight(
     names: List<String>,
-    listState: LazyListState
+    listState: LazyListState,
+    indexOffset: Int = 0
 ): Pair<String?, (Int) -> Unit> {
     val coroutineScope = rememberCoroutineScope()
     var highlightedName by remember { mutableStateOf<String?>(null) }
@@ -522,7 +524,7 @@ private fun rememberNameHighlight(
     }
     val onJump: (Int) -> Unit = { index ->
         highlightedName = names.getOrNull(index)
-        coroutineScope.launch { listState.scrollToItem(index) }
+        coroutineScope.launch { listState.scrollToItem(index + indexOffset) }
     }
     return highlightedName to onJump
 }
@@ -831,12 +833,21 @@ private fun SimpleTrackList(
         }
 
         val listState = rememberLazyListState()
-        val isAtTop by remember {
-            derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
-        }
 
-        Column(modifier = modifier.fillMaxSize()) {
-            AnimatedVisibility(visible = isAtTop) {
+        // Toolbar as a real item (index 0), not a Modifier.weight(1f) sibling -- see TracksList's
+        // identical comment for why: weight() re-measures the list on every frame of the
+        // toolbar's collapse animation, right as scrolling starts.
+        LazyColumn(
+            state = listState,
+            modifier = modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                bottom = 120.dp,
+                top = 4.dp,
+                end = 8.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            item(key = "toolbar", contentType = "toolbar") {
                 LibraryToolbar(
                     sortOption = sortOption,
                     onSortOptionSelected = { sortOption = it },
@@ -845,34 +856,21 @@ private fun SimpleTrackList(
                 )
             }
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxSize(),
-                contentPadding = PaddingValues(
-                    bottom = 120.dp,
-                    top = 4.dp,
-                    end = 8.dp
-                ),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(
-                    items = sortedTracks,
-                    key = { it.id }
-                ) { track ->
-                    val isPlayingThis = currentTrack?.id == track.id
-                    TrackItem(
-                        track = track,
-                        isPlayingThisTrack = isPlayingThis,
-                        onClick = { onTrackClick(track) },
-                        modifier = Modifier.padding(start = 8.dp),
-                        showDuration = true,
-                        onAddToPlaylist = { onAddToPlaylist(track) },
-                        onShare = { onShare(track) },
-                        onTrackDetails = { onOpenTrackDetails(track) }
-                    )
-                }
+            items(
+                items = sortedTracks,
+                key = { it.id }
+            ) { track ->
+                val isPlayingThis = currentTrack?.id == track.id
+                TrackItem(
+                    track = track,
+                    isPlayingThisTrack = isPlayingThis,
+                    onClick = { onTrackClick(track) },
+                    modifier = Modifier.padding(start = 8.dp),
+                    showDuration = true,
+                    onAddToPlaylist = { onAddToPlaylist(track) },
+                    onShare = { onShare(track) },
+                    onTrackDetails = { onOpenTrackDetails(track) }
+                )
             }
         }
     }
@@ -1537,38 +1535,37 @@ private fun AlbumsList(
     val canScroll by remember {
         derivedStateOf { listState.layoutInfo.totalItemsCount > listState.layoutInfo.visibleItemsInfo.size }
     }
-    val isAtTop by remember {
-        derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
-    }
     val albumNames = remember(sortedAlbums) { sortedAlbums.map { it.name } }
-    val (highlightedAlbumName, onAlphabetJump) = rememberNameHighlight(albumNames, listState)
+    val (highlightedAlbumName, onAlphabetJump) = rememberNameHighlight(albumNames, listState, indexOffset = 1)
 
-    Column(modifier = modifier.fillMaxSize()) {
-        AnimatedVisibility(visible = isAtTop) {
-            LibraryToolbar(
-                sortOption = sortOption,
-                onSortOptionSelected = { sortOption = it },
-                onShuffleClick = onShuffleClick,
-                availableSortOptions = listOf(
-                    LibrarySortOption.NAME,
-                    LibrarySortOption.MOST_TRACKS,
-                    LibrarySortOption.LEAST_TRACKS
+    // Toolbar as a real item (index 0), not a Modifier.weight(1f) sibling -- see TracksList's
+    // identical comment for why: weight() re-measures the list on every frame of the toolbar's
+    // collapse animation, right as scrolling starts.
+    Box(modifier = modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                bottom = 120.dp,
+                top = 8.dp,
+                start = 8.dp,
+                end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            item(key = "toolbar", contentType = "toolbar") {
+                LibraryToolbar(
+                    sortOption = sortOption,
+                    onSortOptionSelected = { sortOption = it },
+                    onShuffleClick = onShuffleClick,
+                    availableSortOptions = listOf(
+                        LibrarySortOption.NAME,
+                        LibrarySortOption.MOST_TRACKS,
+                        LibrarySortOption.LEAST_TRACKS
+                    )
                 )
-            )
-        }
+            }
 
-        Box(modifier = Modifier.weight(1f)) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    bottom = 120.dp,
-                    top = 8.dp,
-                    start = 8.dp,
-                    end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
-                ),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
                 items(sortedAlbums, key = { it.name }) { album ->
                     val backgroundColor by animateColorAsState(
                         targetValue = if (album.name == highlightedAlbumName) {
@@ -1636,15 +1633,14 @@ private fun AlbumsList(
                 }
             }
 
-            if (canScroll) {
-                AlphabetScrollbar(
-                    labels = albumNames,
-                    onJump = onAlphabetJump,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxHeight()
-                )
-            }
+        if (canScroll) {
+            AlphabetScrollbar(
+                labels = albumNames,
+                onJump = onAlphabetJump,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+            )
         }
     }
 }
@@ -1668,38 +1664,37 @@ private fun ArtistsList(
     val canScroll by remember {
         derivedStateOf { listState.layoutInfo.totalItemsCount > listState.layoutInfo.visibleItemsInfo.size }
     }
-    val isAtTop by remember {
-        derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
-    }
     val artistNames = remember(sortedArtists) { sortedArtists.map { it.name } }
-    val (highlightedArtistName, onAlphabetJump) = rememberNameHighlight(artistNames, listState)
+    val (highlightedArtistName, onAlphabetJump) = rememberNameHighlight(artistNames, listState, indexOffset = 1)
 
-    Column(modifier = modifier.fillMaxSize()) {
-        AnimatedVisibility(visible = isAtTop) {
-            LibraryToolbar(
-                sortOption = sortOption,
-                onSortOptionSelected = { sortOption = it },
-                onShuffleClick = onShuffleClick,
-                availableSortOptions = listOf(
-                    LibrarySortOption.NAME,
-                    LibrarySortOption.MOST_TRACKS,
-                    LibrarySortOption.LEAST_TRACKS
+    // Toolbar as a real item (index 0), not a Modifier.weight(1f) sibling -- see TracksList's
+    // identical comment for why: weight() re-measures the list on every frame of the toolbar's
+    // collapse animation, right as scrolling starts.
+    Box(modifier = modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                bottom = 120.dp,
+                top = 4.dp,
+                start = 8.dp,
+                end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            item(key = "toolbar", contentType = "toolbar") {
+                LibraryToolbar(
+                    sortOption = sortOption,
+                    onSortOptionSelected = { sortOption = it },
+                    onShuffleClick = onShuffleClick,
+                    availableSortOptions = listOf(
+                        LibrarySortOption.NAME,
+                        LibrarySortOption.MOST_TRACKS,
+                        LibrarySortOption.LEAST_TRACKS
+                    )
                 )
-            )
-        }
+            }
 
-        Box(modifier = Modifier.weight(1f)) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    bottom = 120.dp,
-                    top = 4.dp,
-                    start = 8.dp,
-                    end = if (canScroll) ALPHABET_SCROLLBAR_WIDTH else 8.dp
-                ),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
                 items(sortedArtists, key = { it.name }) { artist ->
                     val backgroundColor by animateColorAsState(
                         targetValue = if (artist.name == highlightedArtistName) {
@@ -1767,15 +1762,14 @@ private fun ArtistsList(
                 }
             }
 
-            if (canScroll) {
-                AlphabetScrollbar(
-                    labels = artistNames,
-                    onJump = onAlphabetJump,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxHeight()
-                )
-            }
+        if (canScroll) {
+            AlphabetScrollbar(
+                labels = artistNames,
+                onJump = onAlphabetJump,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+            )
         }
     }
 }
