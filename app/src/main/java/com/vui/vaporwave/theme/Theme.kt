@@ -11,6 +11,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
+private val OledCardGray = Color(0xFF121212)
+private val OledSeekbarGray = Color(0xFF1E1E1E)
+
 val VaporwaveDarkColorScheme = darkColorScheme(
     primary = VaporPink,
     onPrimary = Color(0xFF380036),
@@ -80,20 +83,47 @@ val VaporwaveLightColorScheme = lightColorScheme(
 @Composable
 fun VaporwaveTheme(
     darkTheme: Boolean = true, // Default to stunning dark aesthetic
+    useVaporwaveTheme: Boolean = true, // Neon palette -- takes priority over Material You below
     useDynamicColor: Boolean = false, // Set to true to use Android 12+ wallpaper colors
+    useOledBlack: Boolean = false, // Pure black surfaces/background, only meaningful while dark
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
     // Remembered because dynamicDark/LightColorScheme build a whole ColorScheme from the
     // wallpaper palette on each call; without this it re-runs on every recomposition of the
     // theme, which wraps the entire app.
-    val colorScheme = remember(darkTheme, useDynamicColor, context) {
-        when {
+    val colorScheme = remember(darkTheme, useVaporwaveTheme, useDynamicColor, useOledBlack, context) {
+        // Neon and Material You are two different ways of picking a whole palette -- they can't
+        // both apply at once, so Neon wins when both are on (Material You has nothing to do in
+        // that case; SettingsScreen dims its toggle to make that explicit rather than silent).
+        val base = when {
+            useVaporwaveTheme -> if (darkTheme) VaporwaveDarkColorScheme else VaporwaveLightColorScheme
             useDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
                 if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
             }
-            darkTheme -> VaporwaveDarkColorScheme
-            else -> VaporwaveLightColorScheme
+            // Neither Neon nor Material You (or Material You unavailable pre-Android 12): a
+            // plain, unbranded Material 3 baseline rather than silently falling back to neon.
+            darkTheme -> darkColorScheme()
+            else -> lightColorScheme()
+        }
+
+        if (useOledBlack && darkTheme) {
+            // background/surface go pure black (the actual OLED power-saving win); Card
+            // containers (surfaceContainer/Low/High) go dark gray instead, so they're still
+            // visible against that black backdrop. surfaceContainerHighest is kept as its own,
+            // slightly lighter gray -- it's what the seek bar's unseeked track (and the volume
+            // slider) are themed off, and that one was asked to stay at the original shade
+            // rather than following the cards' later darkening.
+            base.copy(
+                background = Color.Black,
+                surface = Color.Black,
+                surfaceContainer = OledCardGray,
+                surfaceContainerLow = OledCardGray,
+                surfaceContainerHigh = OledCardGray,
+                surfaceContainerHighest = OledSeekbarGray
+            )
+        } else {
+            base
         }
     }
 
