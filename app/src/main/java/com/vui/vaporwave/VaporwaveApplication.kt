@@ -19,6 +19,7 @@ class VaporwaveApplication : Application(), SingletonImageLoader.Factory {
     override fun newImageLoader(context: PlatformContext): ImageLoader {
         return ImageLoader.Builder(context)
             .components {
+                add(AudioThumbnailKeyer())
                 add(AudioThumbnailFetcher.Factory())
             }
             .memoryCache {

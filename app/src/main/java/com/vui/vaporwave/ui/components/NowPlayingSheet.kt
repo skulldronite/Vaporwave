@@ -63,6 +63,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
@@ -121,6 +122,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.media3.common.Player
 import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.size.Size as CoilSize
 import com.vui.vaporwave.model.AudioTrack
 import com.vui.vaporwave.model.LyricLine
 import com.vui.vaporwave.model.LyricsResult
@@ -171,6 +174,7 @@ fun NowPlayingSheet(
     onOpenAlbum: () -> Unit,
     onOpenArtist: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenTrackDetails: () -> Unit,
     onShare: () -> Unit,
     onDeleteTrack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -314,6 +318,14 @@ fun NowPlayingSheet(
                                 onClick = {
                                     isOverflowMenuExpanded = false
                                     onOpenSettings()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Track Details") },
+                                leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
+                                onClick = {
+                                    isOverflowMenuExpanded = false
+                                    onOpenTrackDetails()
                                 }
                             )
                         }
@@ -472,8 +484,19 @@ fun NowPlayingSheet(
                         Box(contentAlignment = Alignment.Center) {
                             artworkPlaceholder()
                             if (track.artworkUri != null) {
+                                // A real, explicitly-sized ImageRequest for full-resolution
+                                // display (unlike the 128x128 list-row thumbnails) -- combined
+                                // with the size-aware Keyer registered in VaporwaveApplication,
+                                // this no longer gets served back whatever smaller bitmap a list
+                                // row already cached for the same URI.
+                                val hiResContext = LocalContext.current
                                 AsyncImage(
-                                    model = track.artworkUri,
+                                    model = remember(track.artworkUri) {
+                                        ImageRequest.Builder(hiResContext)
+                                            .data(track.artworkUri)
+                                            .size(CoilSize(1024, 1024))
+                                            .build()
+                                    },
                                     contentDescription = "Album Artwork",
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Crop
